@@ -55,8 +55,21 @@ app.use((req, res, next) => {
 
 // ── Security headers ──────────────────────────────────────────────────────────
 app.use(helmet());
+const allowedOrigins = [
+  'https://marketplace.nuttzar.website',
+  process.env.FRONTEND_URL,
+  process.env.NETLIFY_URL
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'https://marketplace.nuttzar.website',
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.some(o => origin.startsWith(o))) return callback(null, true);
+    // Allow any netlify.app preview URL for the site
+    if (origin.match(/https:\/\/[a-z0-9-]+\.netlify\.app$/)) return callback(null, true);
+    callback(new Error(`CORS blocked: ${origin}`));
+  },
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-internal-key']
 }));

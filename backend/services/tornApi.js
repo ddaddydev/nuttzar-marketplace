@@ -46,21 +46,46 @@ async function getTornDiscordLink(tornId, apiKey) {
 }
 
 // Check buyer's sent money log for payment to admin
-// Returns true if exact amount was sent to Nuttzar (4042794) recently
+// Tries Torn v2 log (requires "log" access) first, falls back to v1 moneyTransfers
 async function verifyPayment(buyerApiKey, expectedAmount) {
   try {
-    const res = await axios.get(
+    const cutoff = Math.floor(Date.now() / 1000) - 3600; // last 1 hour
+
+    // --- Try Torn v2 log first (category 100 = money sent) ---
+    try {
+      const v2 = await axios.get(
+        `${TORN_API_BASE}/v2/user/log?cat=100&limit=100&key=${buyerApiKey}`,
+        { timeout: 8000 }
+      );
+
+      if (!v2.data.error) {
+        const logs = v2.data.log || {};
+        for (const entry of Object.values(logs)) {
+          const params = entry.params || {};
+          if (
+            entry.timestamp >= cutoff &&
+            String(params.to_id || params.recipient || '') === ADMIN_TORN_ID &&
+            (params.amount === expectedAmount || params.money === expectedAmount)
+          ) {
+            return { verified: true, entry };
+          }
+        }
+      }
+    } catch (_) {
+      // v2 failed, fall through to v1
+    }
+
+    // --- Fallback: v1 moneyTransfers ---
+    const v1 = await axios.get(
       `${TORN_API_BASE}/user/?selections=moneyTransfers&key=${buyerApiKey}`,
       { timeout: 8000 }
     );
 
-    if (res.data.error) {
-      return { verified: false, error: res.data.error.error };
+    if (v1.data.error) {
+      return { verified: false, error: v1.data.error.error };
     }
 
-    const transfers = res.data.money_transfers || {};
-    const cutoff = Math.floor(Date.now() / 1000) - 3600; // last 1 hour
-
+    const transfers = v1.data.money_transfers || {};
     for (const transfer of Object.values(transfers)) {
       if (
         transfer.type === 'sent' &&
@@ -72,13 +97,16 @@ async function verifyPayment(buyerApiKey, expectedAmount) {
       }
     }
 
-    return { verified: false, error: 'Payment not found — make sure you sent the exact amount within the last hour' };
+    return {
+      verified: false,
+      error: 'Payment not found — send the exact amount within the last hour. Your Torn API key needs "Log" access enabled at torn.com/preferences.php#tab=api'
+    };
   } catch (err) {
     return { verified: false, error: 'Failed to reach Torn API' };
   }
 }
 
-// Check seller's attack log for losses/escapes against a target
+// Check seller's attack log for losses against a target
 async function verifyAttackLog(sellerApiKey, targetTornId, requiredCount, afterTimestamp) {
   try {
     const res = await axios.get(
@@ -129,7 +157,6 @@ async function verifyEscapeLog(sellerApiKey, buyerTornId, requiredCount, afterTi
     let count = 0;
 
     for (const attack of Object.values(attacks)) {
-      // For escapes: seller is DEFENDER, buyer is ATTACKER, result = 'Escape'
       if (
         String(attack.attacker_id) === String(buyerTornId) &&
         attack.timestamp_started >= afterTimestamp &&

@@ -124,7 +124,7 @@ router.post('/checkout', async (req, res) => {
       buyer_name: tornCheck.torn_name,
       pricing,
       payment_instructions: {
-        send_to: 'Nuttzar [4042794]',
+        send_to: 'Brxxntt [4042794]',
         amount: pricing.total_buyer_pays,
         message: `Contract #${contract.id}`,
         note: 'Send the EXACT amount shown. Payment is verified automatically via your Torn API.'

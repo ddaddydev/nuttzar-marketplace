@@ -1179,7 +1179,7 @@
             <span class="val" id="r-subtotal">—</span>
           </div>
           <div class="receipt-line highlight">
-            <span class="label">Total you send Nuttzar</span>
+            <span class="label">Total you send Brxxntt</span>
             <span class="val" id="r-total">—</span>
           </div>
           <div class="receipt-seller-note" id="r-seller-note">
@@ -1213,7 +1213,7 @@
         <li>Choose a service type, set your price and quantity</li>
         <li>Use the calculator to see exactly what you'll pay and what sellers receive</li>
         <li>Enter your Torn API key at checkout — this verifies your identity and confirms payment automatically</li>
-        <li>Send the exact amount to Nuttzar in-game. Contract goes live instantly once confirmed.</li>
+        <li>Send the exact amount to <strong>Brxxntt [4042794]</strong> in-game. Contract goes live instantly once confirmed.</li>
         <li>Track your contract in Discord — sellers claim and complete in real time</li>
         <li>You're notified when your contract is fully filled</li>
       </ul>
@@ -1227,7 +1227,7 @@
         <li>Browse open contracts in the contract channels — click <strong>Claim Units</strong></li>
         <li>You get a DM with instructions and a 30-minute timer</li>
         <li>Complete the work in-game, then click <strong>Click when completed</strong></li>
-        <li>Your attack log is checked via API — payout queued to Nuttzar to send you</li>
+        <li>Your attack log is checked via API — payout queued to Brxxntt to send you</li>
       </ul>
     </div>
   </div>
@@ -1241,7 +1241,7 @@
     <div class="step-card">
       <div class="step-num display">02</div>
       <div class="step-title">Verify & Pay</div>
-      <p class="step-desc">Enter your Torn API at checkout. Send the exact amount to Nuttzar. Verified instantly.</p>
+      <p class="step-desc">Enter your Torn API at checkout. Send the exact amount to Brxxntt [4042794]. Verified instantly.</p>
     </div>
     <div class="step-card">
       <div class="step-num display">03</div>
@@ -1294,7 +1294,7 @@
             <span class="val" id="m-seller">—</span>
           </div>
           <div class="modal-order-row grand">
-            <span>Total you send Nuttzar</span>
+            <span>Total you send Brxxntt</span>
             <span class="val" id="m-total">—</span>
           </div>
         </div>
@@ -1307,8 +1307,9 @@
           </div>
           <p class="api-info">
             Used to verify your identity and confirm payment automatically.<br>
-            Stored encrypted. Never visible to anyone including admins.<br>
-            Requires: Basic access enabled on your Torn API key.
+            Stored encrypted, never visible to anyone including admins.<br>
+            ⚠️ Requires <strong>Full</strong> (or Custom with <strong>Log</strong> enabled) access.<br>
+            <a href="https://www.torn.com/preferences.php#tab=api" target="_blank" style="color:var(--accent);font-size:0.8rem;">Generate key at torn.com → Settings → API Key →</a>
           </p>
           <div class="verify-status" id="verify-status"></div>
         </div>
@@ -1324,7 +1325,10 @@
           <div class="payment-card-label">Payment Instructions</div>
           <div class="payment-detail">
             <span class="key">Send to</span>
-            <span class="value">Nuttzar [4042794]</span>
+            <span class="value">
+              <a href="https://www.torn.com/profiles.php?XID=4042794" target="_blank" style="color:var(--accent);text-decoration:none;border-bottom:1px dashed var(--accent);">Brxxntt [4042794]</a>
+              &nbsp;<a href="https://www.torn.com/imarket.php#/send-money?player=4042794" target="_blank" style="font-size:0.75rem;color:var(--muted);text-decoration:none;background:rgba(200,241,53,0.08);border:1px solid rgba(200,241,53,0.2);padding:2px 8px;">Send Money →</a>
+            </span>
           </div>
           <div class="payment-detail">
             <span class="key">Exact Amount</span>
@@ -1377,7 +1381,7 @@
 
 <script>
   // ── State ───────────────────────────────────────────────────────
-  const BACKEND = 'https://your-backend.railway.app'; // UPDATE THIS IN PHASE 5
+  const BACKEND = 'https://calm-perception-production.up.railway.app';
 
   const MIN_PRICES = { loss: 250000, bounty: 50000, escape: 350000 };
   const NORMAL_PRICES = { loss: 300000, bounty: 100000, escape: 500000 };
@@ -1567,7 +1571,8 @@
       setModalStep(2);
 
     } catch (err) {
-      setVerifyStatus('error', '❌ Could not reach the server. Please try again.');
+      console.error('Verify error:', err);
+      setVerifyStatus('error', `❌ Could not reach the server — ${err.message || 'network error'}. Check your connection and try again.`);
     }
 
     btn.disabled = false;

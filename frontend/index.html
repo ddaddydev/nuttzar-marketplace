@@ -1,0 +1,1642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nuttzar Marketplace — Torn Services</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@300;400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ── Variables ─────────────────────────────────────────────── */
+    :root {
+      --bg:        #0a0a0c;
+      --surface:   #111116;
+      --card:      #16161d;
+      --border:    #2a2a35;
+      --accent:    #c8f135;       /* electric lime */
+      --accent2:   #f13535;       /* blood red */
+      --accent3:   #f1a935;       /* amber */
+      --text:      #e8e8f0;
+      --muted:     #6b6b80;
+      --loss:      #f13535;
+      --bounty:    #f1a935;
+      --escape:    #35a4f1;
+      --mono:      'DM Mono', monospace;
+      --display:   'Bebas Neue', cursive;
+      --body:      'Syne', sans-serif;
+    }
+
+    /* ── Reset ─────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--body);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Noise overlay ─────────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.4;
+    }
+
+    /* ── Grid background ───────────────────────────────────────── */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(200,241,53,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(200,241,53,0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Typography ────────────────────────────────────────────── */
+    .display { font-family: var(--display); letter-spacing: 0.02em; }
+    .mono { font-family: var(--mono); }
+
+    /* ── Nav ───────────────────────────────────────────────────── */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.2rem 2.5rem;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10,10,12,0.85);
+      backdrop-filter: blur(12px);
+    }
+
+    .nav-logo {
+      font-family: var(--display);
+      font-size: 1.6rem;
+      letter-spacing: 0.1em;
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .nav-logo span { color: var(--text); }
+
+    .nav-links {
+      display: flex;
+      gap: 2rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-decoration: none;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover { color: var(--accent); }
+
+    .nav-cta {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      padding: 0.5rem 1.2rem;
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      cursor: pointer;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      font-weight: 500;
+      text-decoration: none;
+      transition: opacity 0.2s;
+    }
+    .nav-cta:hover { opacity: 0.85; }
+
+    /* ── Hero ──────────────────────────────────────────────────── */
+    .hero {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 8rem 2.5rem 4rem;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .hero-tag {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .hero-tag::before {
+      content: '';
+      display: block;
+      width: 2rem;
+      height: 1px;
+      background: var(--accent);
+    }
+
+    .hero h1 {
+      font-family: var(--display);
+      font-size: clamp(4rem, 10vw, 9rem);
+      line-height: 0.92;
+      letter-spacing: 0.02em;
+      margin-bottom: 2rem;
+    }
+
+    .hero h1 .accent { color: var(--accent); }
+    .hero h1 .dim { color: var(--muted); }
+
+    .hero-sub {
+      font-size: 1.05rem;
+      color: var(--muted);
+      max-width: 520px;
+      line-height: 1.7;
+      margin-bottom: 3rem;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .btn-primary {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.9rem 2rem;
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.2s;
+      text-decoration: none;
+      display: inline-block;
+    }
+    .btn-primary:hover { opacity: 0.85; transform: translateY(-1px); }
+
+    .btn-secondary {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.9rem 2rem;
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      font-weight: 400;
+      transition: all 0.2s;
+      text-decoration: none;
+      display: inline-block;
+    }
+    .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ── Stats bar ─────────────────────────────────────────────── */
+    .stats-bar {
+      position: relative;
+      z-index: 1;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      justify-content: center;
+      gap: 0;
+    }
+
+    .stat-item {
+      padding: 1.5rem 3rem;
+      text-align: center;
+      border-right: 1px solid var(--border);
+      flex: 1;
+      max-width: 220px;
+    }
+    .stat-item:last-child { border-right: none; }
+
+    .stat-num {
+      font-family: var(--display);
+      font-size: 2rem;
+      color: var(--accent);
+      letter-spacing: 0.05em;
+    }
+
+    .stat-label {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      color: var(--muted);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-top: 0.25rem;
+    }
+
+    /* ── Section ───────────────────────────────────────────────── */
+    section {
+      position: relative;
+      z-index: 1;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 6rem 2.5rem;
+    }
+
+    .section-label {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .section-label::before {
+      content: '';
+      display: block;
+      width: 1.5rem;
+      height: 1px;
+      background: var(--accent);
+    }
+
+    .section-title {
+      font-family: var(--display);
+      font-size: clamp(2.5rem, 5vw, 4.5rem);
+      line-height: 1;
+      letter-spacing: 0.02em;
+      margin-bottom: 3.5rem;
+    }
+
+    /* ── Service cards ─────────────────────────────────────────── */
+    .services-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+    }
+
+    .service-card {
+      background: var(--card);
+      padding: 2.5rem;
+      position: relative;
+      overflow: hidden;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .service-card:hover { background: #1a1a24; }
+
+    .service-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0;
+      width: 3px;
+      height: 100%;
+    }
+    .service-card.loss::before { background: var(--loss); }
+    .service-card.bounty::before { background: var(--bounty); }
+    .service-card.escape::before { background: var(--escape); }
+
+    .service-icon {
+      font-size: 2rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .service-name {
+      font-family: var(--display);
+      font-size: 2.2rem;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.75rem;
+    }
+    .loss .service-name { color: var(--loss); }
+    .bounty .service-name { color: var(--bounty); }
+    .escape .service-name { color: var(--escape); }
+
+    .service-desc {
+      font-size: 0.9rem;
+      color: var(--muted);
+      line-height: 1.7;
+      margin-bottom: 1.5rem;
+    }
+
+    .service-price {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      padding: 0.6rem 1rem;
+      border: 1px solid var(--border);
+      display: inline-block;
+      color: var(--muted);
+    }
+
+    .service-price span {
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .service-cta {
+      display: block;
+      margin-top: 1.5rem;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    .service-card:hover .service-cta { color: var(--accent); }
+    .service-cta::after { content: '  →'; }
+
+    /* ── Price guide ───────────────────────────────────────────── */
+    .price-guide {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 0;
+      overflow: hidden;
+    }
+
+    .price-guide-header {
+      padding: 1.5rem 2rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .price-guide-header h3 {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .live-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    .price-rows { display: flex; flex-direction: column; }
+
+    .price-row {
+      display: grid;
+      grid-template-columns: 140px 1fr 1fr 1fr;
+      align-items: center;
+      padding: 1.25rem 2rem;
+      border-bottom: 1px solid var(--border);
+      gap: 1rem;
+    }
+    .price-row:last-child { border-bottom: none; }
+    .price-row:hover { background: rgba(200,241,53,0.02); }
+
+    .price-type {
+      font-family: var(--display);
+      font-size: 1.3rem;
+      letter-spacing: 0.05em;
+    }
+    .price-type.loss { color: var(--loss); }
+    .price-type.bounty { color: var(--bounty); }
+    .price-type.escape { color: var(--escape); }
+
+    .price-col {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+    }
+    .price-col-label { color: var(--muted); font-size: 0.65rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 0.2rem; }
+    .price-col-val { color: var(--text); }
+    .price-col-val.accent { color: var(--accent); }
+
+    /* ── Calculator ────────────────────────────────────────────── */
+    #calculator {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 6rem 2.5rem;
+    }
+
+    .calc-wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4rem;
+      align-items: start;
+    }
+
+    @media (max-width: 768px) {
+      .calc-wrap { grid-template-columns: 1fr; gap: 2rem; }
+      .price-row { grid-template-columns: 100px 1fr 1fr; }
+      .price-row .price-col:last-child { display: none; }
+    }
+
+    .calc-form { display: flex; flex-direction: column; gap: 1.5rem; }
+
+    .field-group { display: flex; flex-direction: column; gap: 0.5rem; }
+
+    .field-label {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .field-input {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 0.9rem;
+      padding: 0.85rem 1rem;
+      outline: none;
+      width: 100%;
+      transition: border-color 0.2s;
+      appearance: none;
+    }
+    .field-input:focus { border-color: var(--accent); }
+    .field-input option { background: var(--card); }
+
+    .type-pills {
+      display: flex;
+      gap: 0;
+    }
+
+    .type-pill {
+      flex: 1;
+      padding: 0.75rem;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.15s;
+      text-align: center;
+    }
+    .type-pill:not(:last-child) { border-right: none; }
+    .type-pill.active.loss { background: rgba(241,53,53,0.15); border-color: var(--loss); color: var(--loss); }
+    .type-pill.active.bounty { background: rgba(241,169,53,0.15); border-color: var(--bounty); color: var(--bounty); }
+    .type-pill.active.escape { background: rgba(53,164,241,0.15); border-color: var(--escape); color: var(--escape); }
+
+    .field-hint {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      color: var(--muted);
+      margin-top: 0.25rem;
+    }
+    .field-hint.warn { color: var(--accent3); }
+
+    /* ── Receipt card ──────────────────────────────────────────── */
+    .receipt {
+      background: var(--card);
+      border: 1px solid var(--border);
+      position: sticky;
+      top: 6rem;
+    }
+
+    .receipt-header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .receipt-title {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .receipt-type-badge {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.6rem;
+      border: 1px solid var(--border);
+    }
+
+    .receipt-body { padding: 1.5rem; }
+
+    .receipt-line {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.65rem 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+    }
+    .receipt-line:last-child { border-bottom: none; }
+    .receipt-line .label { color: var(--muted); }
+    .receipt-line .val { color: var(--text); }
+    .receipt-line.highlight .val { color: var(--accent); font-weight: 500; }
+    .receipt-line.total {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      border-bottom: none;
+    }
+    .receipt-line.total .label { color: var(--text); font-size: 0.85rem; }
+    .receipt-line.total .val { font-size: 1.1rem; color: var(--accent); }
+
+    .receipt-seller-note {
+      margin-top: 1rem;
+      padding: 1rem;
+      background: rgba(200,241,53,0.05);
+      border: 1px solid rgba(200,241,53,0.15);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--accent);
+      line-height: 1.6;
+    }
+
+    .receipt-footer {
+      padding: 1.25rem 1.5rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .price-warning {
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      color: var(--accent3);
+      padding: 0.75rem 1rem;
+      border: 1px solid rgba(241,169,53,0.2);
+      background: rgba(241,169,53,0.05);
+      margin-bottom: 1rem;
+      line-height: 1.6;
+      display: none;
+    }
+    .price-warning.show { display: block; }
+
+    /* ── Checkout modal ────────────────────────────────────────── */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+    .modal-overlay.show { display: flex; }
+
+    .modal {
+      background: var(--card);
+      border: 1px solid var(--border);
+      width: 100%;
+      max-width: 520px;
+      max-height: 90vh;
+      overflow-y: auto;
+      position: relative;
+      animation: modalIn 0.25s ease;
+    }
+
+    @keyframes modalIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .modal-header {
+      padding: 1.5rem 2rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .modal-title {
+      font-family: var(--display);
+      font-size: 1.8rem;
+      letter-spacing: 0.05em;
+      color: var(--accent);
+    }
+
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 1.2rem;
+      cursor: pointer;
+      padding: 0.25rem;
+      transition: color 0.2s;
+    }
+    .modal-close:hover { color: var(--text); }
+
+    .modal-body { padding: 2rem; }
+
+    .modal-step { display: none; }
+    .modal-step.active { display: block; }
+
+    .modal-order-summary {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .modal-order-row {
+      display: flex;
+      justify-content: space-between;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      padding: 0.4rem 0;
+      color: var(--muted);
+    }
+    .modal-order-row.grand {
+      color: var(--text);
+      border-top: 1px solid var(--border);
+      margin-top: 0.5rem;
+      padding-top: 0.75rem;
+      font-size: 1rem;
+    }
+    .modal-order-row.grand .val { color: var(--accent); font-weight: 500; }
+
+    .api-input-wrap { position: relative; }
+    .api-input-wrap .field-input { padding-right: 3rem; letter-spacing: 0.05em; }
+    .api-toggle {
+      position: absolute;
+      right: 0.75rem;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.9rem;
+      padding: 0.25rem;
+    }
+
+    .api-info {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      color: var(--muted);
+      margin-top: 0.5rem;
+      line-height: 1.6;
+    }
+
+    .verify-status {
+      padding: 0.75rem 1rem;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      margin-top: 0.75rem;
+      display: none;
+    }
+    .verify-status.success { background: rgba(200,241,53,0.08); border: 1px solid rgba(200,241,53,0.2); color: var(--accent); display: block; }
+    .verify-status.error { background: rgba(241,53,53,0.08); border: 1px solid rgba(241,53,53,0.2); color: var(--loss); display: block; }
+    .verify-status.loading { background: rgba(255,255,255,0.04); border: 1px solid var(--border); color: var(--muted); display: block; }
+
+    /* Payment instructions card */
+    .payment-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .payment-card-label {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+
+    .payment-detail {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      padding: 0.6rem 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    .payment-detail:last-child { border-bottom: none; }
+    .payment-detail .key { color: var(--muted); }
+    .payment-detail .value { color: var(--text); }
+    .payment-detail .value.big { color: var(--accent); font-size: 1.1rem; }
+
+    .copy-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      padding: 0.2rem 0.5rem;
+      cursor: pointer;
+      letter-spacing: 0.05em;
+      transition: all 0.2s;
+    }
+    .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    .payment-note {
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      color: var(--accent3);
+      line-height: 1.7;
+      padding: 0.75rem 1rem;
+      border: 1px solid rgba(241,169,53,0.2);
+      background: rgba(241,169,53,0.05);
+      margin-top: 1rem;
+    }
+
+    /* ── How it works ──────────────────────────────────────────── */
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+    }
+
+    .step-card {
+      background: var(--card);
+      padding: 2rem;
+    }
+
+    .step-num {
+      font-family: var(--display);
+      font-size: 4rem;
+      color: var(--border);
+      line-height: 1;
+      margin-bottom: 1rem;
+    }
+
+    .step-title {
+      font-family: var(--body);
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
+
+    .step-desc {
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    /* ── Roles section ─────────────────────────────────────────── */
+    .roles-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+    }
+
+    @media (max-width: 600px) {
+      .roles-grid { grid-template-columns: 1fr; }
+    }
+
+    .role-card {
+      background: var(--card);
+      padding: 2.5rem;
+    }
+
+    .role-badge {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      padding: 0.3rem 0.75rem;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      margin-bottom: 1.5rem;
+    }
+
+    .role-title {
+      font-family: var(--display);
+      font-size: 2rem;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+    }
+
+    .role-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+    }
+
+    .role-list li {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--muted);
+      padding-left: 1.25rem;
+      position: relative;
+      line-height: 1.6;
+    }
+
+    .role-list li::before {
+      content: '→';
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+    }
+
+    /* ── Discord CTA ───────────────────────────────────────────── */
+    .discord-cta {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      padding: 4rem 2.5rem;
+      text-align: center;
+    }
+
+    .discord-cta h2 {
+      font-family: var(--display);
+      font-size: 3rem;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+    }
+
+    .discord-cta p {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 2rem;
+      font-family: var(--mono);
+    }
+
+    /* ── Footer ────────────────────────────────────────────────── */
+    footer {
+      position: relative;
+      z-index: 1;
+      padding: 2rem 2.5rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    footer p {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      color: var(--muted);
+      letter-spacing: 0.1em;
+    }
+
+    /* ── Animations ────────────────────────────────────────────── */
+    .fade-up {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+    .fade-up.visible {
+      opacity: 1;
+      transform: none;
+    }
+
+    /* ── Loading spinner ───────────────────────────────────────── */
+    .spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 0.5rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<!-- ── Nav ─────────────────────────────────────────────────────── -->
+<nav>
+  <a href="#" class="nav-logo">NUTTZAR<span>.MKT</span></a>
+  <ul class="nav-links">
+    <li><a href="#services">Services</a></li>
+    <li><a href="#calculator">Buy</a></li>
+    <li><a href="#how-it-works">How it works</a></li>
+    <li><a href="#prices">Price guide</a></li>
+  </ul>
+  <a href="https://discord.gg/YOUR_INVITE" target="_blank" class="nav-cta">Join Discord</a>
+</nav>
+
+<!-- ── Hero ─────────────────────────────────────────────────────── -->
+<div class="hero">
+  <p class="hero-tag">Torn City Underground Marketplace</p>
+  <h1 class="display">
+    BUY<br>
+    <span class="accent">HITS.</span><br>
+    <span class="dim">SELL SLOTS.</span>
+  </h1>
+  <p class="hero-sub">
+    The premier marketplace for Torn City services. Purchase losses, bounty slots, and escapes from verified sellers. All transactions secured and verified via the Torn API.
+  </p>
+  <div class="hero-actions">
+    <a href="#calculator" class="btn-primary">Place a Contract</a>
+    <a href="https://discord.gg/YOUR_INVITE" target="_blank" class="btn-secondary">Become a Seller</a>
+  </div>
+</div>
+
+<!-- ── Stats bar ─────────────────────────────────────────────────── -->
+<div class="stats-bar">
+  <div class="stat-item">
+    <div class="stat-num display">10%</div>
+    <div class="stat-label">Flat Service Fee</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-num display">API</div>
+    <div class="stat-label">Verified Sellers</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-num display">AUTO</div>
+    <div class="stat-label">Payment Verification</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-num display">30M</div>
+    <div class="stat-label">Claim Grace Period</div>
+  </div>
+</div>
+
+<!-- ── Services ──────────────────────────────────────────────────── -->
+<section id="services">
+  <p class="section-label">What We Offer</p>
+  <h2 class="section-title display">SERVICES</h2>
+
+  <div class="services-grid">
+    <div class="service-card loss fade-up">
+      <div class="service-icon">⚔️</div>
+      <div class="service-name display">LOSSES</div>
+      <p class="service-desc">
+        Verified sellers attack you and intentionally lose, recording a loss on your profile. Ideal for stat manipulation or chain assistance. Multiple sellers can fill a single contract simultaneously.
+      </p>
+      <div class="service-price">
+        Min price: <span>$250,000</span> per loss
+      </div>
+      <a href="#calculator" class="service-cta">Buy losses</a>
+    </div>
+
+    <div class="service-card bounty fade-up" style="transition-delay:0.1s">
+      <div class="service-icon">💀</div>
+      <div class="service-name display">BOUNTIES</div>
+      <p class="service-desc">
+        Sellers use their 10 bounty slots to place bounties on a target of your choice. Each player only gets 10 slots, released after fulfillment or 7 days. You set the bounty amount and price per slot.
+      </p>
+      <div class="service-price">
+        Min price: <span>$50,000</span> per slot + bounty amount
+      </div>
+      <a href="#calculator" class="service-cta">Buy bounty slots</a>
+    </div>
+
+    <div class="service-card escape fade-up" style="transition-delay:0.2s">
+      <div class="service-icon">🏃</div>
+      <div class="service-name display">ESCAPES</div>
+      <p class="service-desc">
+        You attack the seller. They escape — requiring their DEX to exceed your SPD so you miss twice. Used for escape stat building or specific profile outcomes. Seller must be stat-verified.
+      </p>
+      <div class="service-price">
+        Min price: <span>$350,000</span> per escape
+      </div>
+      <a href="#calculator" class="service-cta">Buy escapes</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── Price guide ────────────────────────────────────────────────── -->
+<section id="prices" style="padding-top:0">
+  <p class="section-label">Benchmark</p>
+  <h2 class="section-title display">PRICE GUIDE</h2>
+
+  <div class="price-guide fade-up">
+    <div class="price-guide-header">
+      <div class="live-dot"></div>
+      <h3>Normalized Market Rates — Buyers</h3>
+    </div>
+    <div class="price-rows">
+      <div class="price-row">
+        <div class="price-type loss display">LOSS</div>
+        <div class="price-col">
+          <div class="price-col-label">Sellers Expect</div>
+          <div class="price-col-val accent">$300,000</div>
+        </div>
+        <div class="price-col">
+          <div class="price-col-label">Minimum</div>
+          <div class="price-col-val">$250,000</div>
+        </div>
+        <div class="price-col">
+          <div class="price-col-label">Fill Speed at Min</div>
+          <div class="price-col-val" style="color:var(--loss)">Slow</div>
+        </div>
+      </div>
+      <div class="price-row">
+        <div class="price-type bounty display">BOUNTY</div>
+        <div class="price-col">
+          <div class="price-col-label">Sellers Expect</div>
+          <div class="price-col-val accent">$100,000 + bounty</div>
+        </div>
+        <div class="price-col">
+          <div class="price-col-label">Minimum Slot Fee</div>
+          <div class="price-col-val">$50,000</div>
+        </div>
+        <div class="price-col">
+          <div class="price-col-label">Fill Speed at Min</div>
+          <div class="price-col-val" style="color:var(--loss)">Slow</div>
+        </div>
+      </div>
+      <div class="price-row">
+        <div class="price-type escape display">ESCAPE</div>
+        <div class="price-col">
+          <div class="price-col-label">Sellers Expect</div>
+          <div class="price-col-val accent">$500,000</div>
+        </div>
+        <div class="price-col">
+          <div class="price-col-label">Minimum</div>
+          <div class="price-col-val">$350,000</div>
+        </div>
+        <div class="price-col">
+          <div class="price-col-label">Fill Speed at Min</div>
+          <div class="price-col-val" style="color:var(--loss)">Slow</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p style="font-family:var(--mono);font-size:0.7rem;color:var(--muted);margin-top:1.25rem;line-height:1.7;">
+    ⚡ Higher prices attract more sellers and fill contracts faster. Lower prices are valid but expect slower fulfillment. The choice is yours.
+  </p>
+</section>
+
+<!-- ── Calculator ─────────────────────────────────────────────────── -->
+<div id="calculator">
+  <section style="padding:0">
+    <p class="section-label">Order</p>
+    <h2 class="section-title display" style="margin-bottom:2rem">PLACE A CONTRACT</h2>
+
+    <div class="calc-wrap">
+      <!-- Form -->
+      <div class="calc-form">
+        <!-- Type -->
+        <div class="field-group">
+          <label class="field-label">Service Type</label>
+          <div class="type-pills">
+            <button class="type-pill loss active" data-type="loss" onclick="selectType('loss')">⚔️ Loss</button>
+            <button class="type-pill bounty" data-type="bounty" onclick="selectType('bounty')">💀 Bounty</button>
+            <button class="type-pill escape" data-type="escape" onclick="selectType('escape')">🏃 Escape</button>
+          </div>
+        </div>
+
+        <!-- Target (bounty only) -->
+        <div class="field-group" id="target-field" style="display:none">
+          <label class="field-label">Target Torn ID</label>
+          <input type="text" class="field-input" id="target-id" placeholder="e.g. 12345" oninput="updateReceipt()" />
+          <p class="field-hint">The player you want bounties placed on.</p>
+        </div>
+
+        <!-- Bounty amount (bounty only) -->
+        <div class="field-group" id="bounty-amt-field" style="display:none">
+          <label class="field-label">Bounty Amount per Slot ($)</label>
+          <input type="number" class="field-input" id="bounty-amount" placeholder="e.g. 500000" min="0" oninput="updateReceipt()" />
+          <p class="field-hint">Amount placed on each bounty slot. This is separate from the slot fee.</p>
+        </div>
+
+        <!-- Price per unit -->
+        <div class="field-group">
+          <label class="field-label" id="price-label">Price per Loss (seller receives)</label>
+          <input type="number" class="field-input" id="price-input" placeholder="250000" min="0" oninput="updateReceipt()" />
+          <div class="price-warning" id="price-warning"></div>
+          <p class="field-hint" id="price-hint">This is what each seller will receive after our 10% fee. Higher = faster fill.</p>
+        </div>
+
+        <!-- Quantity -->
+        <div class="field-group">
+          <label class="field-label" id="qty-label">Quantity</label>
+          <input type="number" class="field-input" id="qty-input" placeholder="1" min="1" oninput="updateReceipt()" />
+          <p class="field-hint">Total number of units. Multiple sellers can split and fill this simultaneously.</p>
+        </div>
+
+        <button class="btn-primary" onclick="openCheckout()" style="margin-top:0.5rem">
+          Proceed to Checkout →
+        </button>
+      </div>
+
+      <!-- Receipt -->
+      <div class="receipt">
+        <div class="receipt-header">
+          <span class="receipt-title">Order Summary</span>
+          <span class="receipt-type-badge mono" id="receipt-badge">LOSS</span>
+        </div>
+        <div class="receipt-body">
+          <div class="receipt-line">
+            <span class="label">Service</span>
+            <span class="val" id="r-type">Loss</span>
+          </div>
+          <div class="receipt-line">
+            <span class="label">Quantity</span>
+            <span class="val" id="r-qty">—</span>
+          </div>
+          <div class="receipt-line">
+            <span class="label">Price per unit (seller gets)</span>
+            <span class="val" id="r-seller-price">—</span>
+          </div>
+          <div class="receipt-line" id="r-bounty-row" style="display:none">
+            <span class="label">Bounty amount per slot</span>
+            <span class="val" id="r-bounty-amt">—</span>
+          </div>
+          <div class="receipt-line">
+            <span class="label">Subtotal (units × rate)</span>
+            <span class="val" id="r-subtotal">—</span>
+          </div>
+          <div class="receipt-line highlight">
+            <span class="label">Total you send Nuttzar</span>
+            <span class="val" id="r-total">—</span>
+          </div>
+          <div class="receipt-seller-note" id="r-seller-note">
+            Seller payout: — per unit × — units = —
+          </div>
+          <div class="receipt-line total">
+            <span class="label">TOTAL DUE</span>
+            <span class="val" id="r-total-big">—</span>
+          </div>
+        </div>
+        <div class="receipt-footer">
+          <p style="font-family:var(--mono);font-size:0.65rem;color:var(--muted);line-height:1.7">
+            Nuttzar acts as escrow. You send payment first, contract goes live after API verification. Sellers are paid out after each verified completion.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ── How it works ───────────────────────────────────────────────── -->
+<section id="how-it-works">
+  <p class="section-label">Process</p>
+  <h2 class="section-title display">HOW IT WORKS</h2>
+
+  <div class="roles-grid" style="margin-bottom:3rem">
+    <div class="role-card">
+      <div class="role-badge mono">Buyer</div>
+      <div class="role-title display">FOR BUYERS</div>
+      <ul class="role-list">
+        <li>Choose a service type, set your price and quantity</li>
+        <li>Use the calculator to see exactly what you'll pay and what sellers receive</li>
+        <li>Enter your Torn API key at checkout — this verifies your identity and confirms payment automatically</li>
+        <li>Send the exact amount to Nuttzar in-game. Contract goes live instantly once confirmed.</li>
+        <li>Track your contract in Discord — sellers claim and complete in real time</li>
+        <li>You're notified when your contract is fully filled</li>
+      </ul>
+    </div>
+    <div class="role-card">
+      <div class="role-badge mono">Seller</div>
+      <div class="role-title display">FOR SELLERS</div>
+      <ul class="role-list">
+        <li>Join the Discord and run <code style="color:var(--accent);font-family:var(--mono)">/verify</code> with your Torn API key</li>
+        <li>Your nickname is set to your Torn name automatically</li>
+        <li>Browse open contracts in the contract channels — click <strong>Claim Units</strong></li>
+        <li>You get a DM with instructions and a 30-minute timer</li>
+        <li>Complete the work in-game, then click <strong>Click when completed</strong></li>
+        <li>Your attack log is checked via API — payout queued to Nuttzar to send you</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="steps-grid fade-up">
+    <div class="step-card">
+      <div class="step-num display">01</div>
+      <div class="step-title">Set your price</div>
+      <p class="step-desc">Use the calculator to preview the full cost and seller payout before committing.</p>
+    </div>
+    <div class="step-card">
+      <div class="step-num display">02</div>
+      <div class="step-title">Verify & Pay</div>
+      <p class="step-desc">Enter your Torn API at checkout. Send the exact amount to Nuttzar. Verified instantly.</p>
+    </div>
+    <div class="step-card">
+      <div class="step-num display">03</div>
+      <div class="step-title">Sellers Claim</div>
+      <p class="step-desc">Verified Discord sellers see your contract and claim units. Multiple sellers can fill simultaneously.</p>
+    </div>
+    <div class="step-card">
+      <div class="step-num display">04</div>
+      <div class="step-title">Auto-verified</div>
+      <p class="step-desc">Completions are verified via attack logs through the Torn API. No self-reporting trust required.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Discord CTA ────────────────────────────────────────────────── -->
+<div class="discord-cta">
+  <h2 class="display">WANT TO SELL?</h2>
+  <p class="mono">Join the Discord, verify your Torn identity, and start earning from your stats.</p>
+  <a href="https://discord.gg/YOUR_INVITE" target="_blank" class="btn-primary">Join Discord →</a>
+</div>
+
+<!-- ── Footer ─────────────────────────────────────────────────────── -->
+<footer>
+  <p>NUTTZAR MARKETPLACE · marketplace.nuttzar.website</p>
+  <p>NOT AFFILIATED WITH TORN CITY OFFICIAL</p>
+</footer>
+
+<!-- ── Checkout Modal ─────────────────────────────────────────────── -->
+<div class="modal-overlay" id="checkout-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title display">CHECKOUT</span>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+
+      <!-- Step 1: Order review + API key -->
+      <div class="modal-step active" id="step-1">
+        <div class="modal-order-summary">
+          <div class="modal-order-row">
+            <span>Service</span>
+            <span class="val" id="m-type">—</span>
+          </div>
+          <div class="modal-order-row">
+            <span>Quantity</span>
+            <span class="val" id="m-qty">—</span>
+          </div>
+          <div class="modal-order-row">
+            <span>Seller receives per unit</span>
+            <span class="val" id="m-seller">—</span>
+          </div>
+          <div class="modal-order-row grand">
+            <span>Total you send Nuttzar</span>
+            <span class="val" id="m-total">—</span>
+          </div>
+        </div>
+
+        <div class="field-group" style="margin-bottom:1.5rem">
+          <label class="field-label">Your Torn API Key</label>
+          <div class="api-input-wrap">
+            <input type="password" class="field-input" id="api-key-input" placeholder="Paste your Torn API key" autocomplete="off" />
+            <button class="api-toggle" onclick="toggleApiVisibility()" id="api-toggle-btn">👁</button>
+          </div>
+          <p class="api-info">
+            Used to verify your identity and confirm payment automatically.<br>
+            Stored encrypted. Never visible to anyone including admins.<br>
+            Requires: Basic access enabled on your Torn API key.
+          </p>
+          <div class="verify-status" id="verify-status"></div>
+        </div>
+
+        <button class="btn-primary" style="width:100%" onclick="verifyAndProceed()" id="verify-btn">
+          Verify Identity & Continue →
+        </button>
+      </div>
+
+      <!-- Step 2: Payment instructions -->
+      <div class="modal-step" id="step-2">
+        <div class="payment-card">
+          <div class="payment-card-label">Payment Instructions</div>
+          <div class="payment-detail">
+            <span class="key">Send to</span>
+            <span class="value">Nuttzar [4042794]</span>
+          </div>
+          <div class="payment-detail">
+            <span class="key">Exact Amount</span>
+            <span class="value big" id="p-amount">—</span>
+          </div>
+          <div class="payment-detail">
+            <span class="key">Contract ID</span>
+            <span class="value mono" id="p-contract-id">—</span>
+          </div>
+          <div class="payment-detail">
+            <span class="key">Verified as</span>
+            <span class="value" id="p-torn-name">—</span>
+          </div>
+        </div>
+
+        <div class="payment-note">
+          ⚠️ Send the EXACT amount shown. Payment is verified automatically via the Torn API — your contract goes live within seconds of sending. Do not send a different amount.
+        </div>
+
+        <div class="verify-status" id="payment-status" style="margin-top:1rem;display:none"></div>
+
+        <button class="btn-primary" style="width:100%;margin-top:1.5rem" onclick="checkPayment()" id="payment-btn">
+          I've Sent Payment — Verify Now →
+        </button>
+
+        <button class="btn-secondary" style="width:100%;margin-top:0.75rem" onclick="closeModal()">
+          I'll pay later
+        </button>
+      </div>
+
+      <!-- Step 3: Confirmed -->
+      <div class="modal-step" id="step-3">
+        <div style="text-align:center;padding:2rem 0">
+          <div style="font-size:3rem;margin-bottom:1rem">✅</div>
+          <h3 class="display" style="font-size:2rem;color:var(--accent);margin-bottom:1rem">CONTRACT LIVE</h3>
+          <p style="font-family:var(--mono);font-size:0.8rem;color:var(--muted);line-height:1.8">
+            Payment confirmed. Your contract is now visible to sellers in Discord.<br>
+            Sellers will claim and complete units — you'll be notified when fully filled.
+          </p>
+          <div style="margin-top:2rem;padding:1.25rem;background:var(--surface);border:1px solid var(--border)">
+            <p style="font-family:var(--mono);font-size:0.7rem;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.5rem">Contract ID</p>
+            <p class="display mono" style="font-size:2rem;color:var(--accent)" id="final-contract-id">—</p>
+          </div>
+          <a href="https://discord.gg/YOUR_INVITE" target="_blank" class="btn-secondary" style="margin-top:1.5rem;display:inline-block">Join Discord to track →</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ── State ───────────────────────────────────────────────────────
+  const BACKEND = 'https://your-backend.railway.app'; // UPDATE THIS IN PHASE 5
+
+  const MIN_PRICES = { loss: 250000, bounty: 50000, escape: 350000 };
+  const NORMAL_PRICES = { loss: 300000, bounty: 100000, escape: 500000 };
+  const TYPE_LABELS = { loss: 'Loss', bounty: 'Bounty Slot', escape: 'Escape' };
+
+  let currentType = 'loss';
+  let currentContractId = null;
+  let currentContractUuid = null;
+  let verifiedTornName = null;
+
+  // ── Type selection ──────────────────────────────────────────────
+  function selectType(type) {
+    currentType = type;
+
+    document.querySelectorAll('.type-pill').forEach(p => {
+      p.classList.remove('active');
+      if (p.dataset.type === type) p.classList.add('active');
+    });
+
+    // Show/hide bounty fields
+    document.getElementById('target-field').style.display = type === 'bounty' ? 'flex' : 'none';
+    document.getElementById('bounty-amt-field').style.display = type === 'bounty' ? 'flex' : 'none';
+    document.getElementById('r-bounty-row').style.display = type === 'bounty' ? 'flex' : 'none';
+
+    // Update labels
+    const labels = {
+      loss: ['Price per Loss (seller receives)', 'Quantity (number of losses)'],
+      bounty: ['Slot Fee per Bounty (seller receives)', 'Quantity (number of bounty slots)'],
+      escape: ['Price per Escape (seller receives)', 'Quantity (number of escapes)']
+    };
+    document.getElementById('price-label').textContent = labels[type][0];
+    document.getElementById('qty-label').textContent = labels[type][1];
+
+    // Update min placeholder
+    document.getElementById('price-input').placeholder = MIN_PRICES[type].toLocaleString();
+
+    // Update receipt badge
+    document.getElementById('receipt-badge').textContent = type.toUpperCase();
+    document.getElementById('r-type').textContent = TYPE_LABELS[type];
+
+    updateReceipt();
+  }
+
+  // ── Receipt calculator ──────────────────────────────────────────
+  function updateReceipt() {
+    const price = parseInt(document.getElementById('price-input').value) || 0;
+    const qty = parseInt(document.getElementById('qty-input').value) || 0;
+    const bountyAmt = parseInt(document.getElementById('bounty-amount')?.value) || 0;
+
+    const minPrice = MIN_PRICES[currentType];
+    const warning = document.getElementById('price-warning');
+
+    // Price warning
+    if (price > 0 && price < minPrice) {
+      warning.textContent = `⚠️ Below minimum. Minimum seller price for ${currentType} is $${minPrice.toLocaleString()}.`;
+      warning.classList.add('show');
+    } else if (price > 0 && price < NORMAL_PRICES[currentType]) {
+      warning.textContent = `ℹ️ Below market rate ($${NORMAL_PRICES[currentType].toLocaleString()}). Expect slower fill time.`;
+      warning.classList.add('show');
+    } else {
+      warning.classList.remove('show');
+    }
+
+    if (!price || !qty) {
+      ['r-qty','r-seller-price','r-subtotal','r-total','r-total-big'].forEach(id => {
+        document.getElementById(id).textContent = '—';
+      });
+      document.getElementById('r-seller-note').textContent = 'Seller payout: — per unit × — units = —';
+      return;
+    }
+
+    // 10% fee: buyer pays price / 0.9 (rounded up)
+    const buyerGross = Math.ceil(price / 0.9);
+    const totalPerUnit = currentType === 'bounty' ? buyerGross + bountyAmt : buyerGross;
+    const total = totalPerUnit * qty;
+    const sellerTotal = price * qty;
+
+    document.getElementById('r-qty').textContent = qty.toLocaleString();
+    document.getElementById('r-seller-price').textContent = `$${price.toLocaleString()}`;
+    document.getElementById('r-subtotal').textContent = `$${(buyerGross * qty).toLocaleString()}`;
+    document.getElementById('r-total').textContent = `$${total.toLocaleString()}`;
+    document.getElementById('r-total-big').textContent = `$${total.toLocaleString()}`;
+    document.getElementById('r-seller-note').textContent =
+      `Seller payout: $${price.toLocaleString()} per unit × ${qty} units = $${sellerTotal.toLocaleString()}`;
+
+    if (currentType === 'bounty' && bountyAmt) {
+      document.getElementById('r-bounty-amt').textContent = `$${bountyAmt.toLocaleString()}`;
+    }
+  }
+
+  // ── Checkout ────────────────────────────────────────────────────
+  function openCheckout() {
+    const price = parseInt(document.getElementById('price-input').value);
+    const qty = parseInt(document.getElementById('qty-input').value);
+
+    if (!price || price < MIN_PRICES[currentType]) {
+      alert(`Please enter a valid price (minimum $${MIN_PRICES[currentType].toLocaleString()})`);
+      return;
+    }
+    if (!qty || qty < 1) {
+      alert('Please enter a valid quantity.');
+      return;
+    }
+
+    const bountyAmt = parseInt(document.getElementById('bounty-amount')?.value) || 0;
+    const buyerGross = Math.ceil(price / 0.9);
+    const totalPerUnit = currentType === 'bounty' ? buyerGross + bountyAmt : buyerGross;
+    const total = totalPerUnit * qty;
+
+    // Populate modal step 1
+    document.getElementById('m-type').textContent = TYPE_LABELS[currentType];
+    document.getElementById('m-qty').textContent = qty.toLocaleString();
+    document.getElementById('m-seller').textContent = `$${price.toLocaleString()}`;
+    document.getElementById('m-total').textContent = `$${total.toLocaleString()}`;
+
+    setModalStep(1);
+    document.getElementById('checkout-modal').classList.add('show');
+  }
+
+  function closeModal() {
+    document.getElementById('checkout-modal').classList.remove('show');
+    document.getElementById('api-key-input').value = '';
+    document.getElementById('verify-status').className = 'verify-status';
+  }
+
+  function setModalStep(n) {
+    document.querySelectorAll('.modal-step').forEach((s, i) => {
+      s.classList.toggle('active', i + 1 === n);
+    });
+  }
+
+  function toggleApiVisibility() {
+    const input = document.getElementById('api-key-input');
+    input.type = input.type === 'password' ? 'text' : 'password';
+  }
+
+  // ── Verify identity + create contract ──────────────────────────
+  async function verifyAndProceed() {
+    const apiKey = document.getElementById('api-key-input').value.trim();
+    if (!apiKey || apiKey.length < 16) {
+      setVerifyStatus('error', '❌ Please enter a valid Torn API key.');
+      return;
+    }
+
+    const btn = document.getElementById('verify-btn');
+    btn.disabled = true;
+    btn.textContent = 'Verifying...';
+    setVerifyStatus('loading', '<span class="spinner"></span> Verifying your identity via Torn API...');
+
+    try {
+      const price = parseInt(document.getElementById('price-input').value);
+      const qty = parseInt(document.getElementById('qty-input').value);
+      const bountyAmt = parseInt(document.getElementById('bounty-amount')?.value) || 0;
+      const targetId = document.getElementById('target-id')?.value.trim() || '';
+
+      const res = await fetch(`${BACKEND}/api/contracts/checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: currentType,
+          seller_price_per_unit: price,
+          quantity: qty,
+          bounty_amount: bountyAmt,
+          target_torn_id: targetId || undefined,
+          buyer_api_key: apiKey
+        })
+      });
+
+      const data = await res.json();
+
+      if (!data.success) {
+        setVerifyStatus('error', `❌ ${data.error}`);
+        btn.disabled = false;
+        btn.textContent = 'Verify Identity & Continue →';
+        return;
+      }
+
+      // Success — move to payment step
+      currentContractId = data.contract_id;
+      currentContractUuid = data.contract_uuid;
+      verifiedTornName = `${data.buyer_name} [${data.payment_instructions.send_to.split('[')[1]?.replace(']','')}]`;
+
+      document.getElementById('p-amount').textContent = `$${data.payment_instructions.amount.toLocaleString()}`;
+      document.getElementById('p-contract-id').textContent = `#${data.contract_id}`;
+      document.getElementById('p-torn-name').textContent = data.buyer_name;
+
+      setModalStep(2);
+
+    } catch (err) {
+      setVerifyStatus('error', '❌ Could not reach the server. Please try again.');
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Verify Identity & Continue →';
+  }
+
+  // ── Check payment ───────────────────────────────────────────────
+  async function checkPayment() {
+    if (!currentContractUuid) return;
+
+    const btn = document.getElementById('payment-btn');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+
+    const status = document.getElementById('payment-status');
+    status.className = 'verify-status loading';
+    status.style.display = 'block';
+    status.innerHTML = '<span class="spinner"></span> Checking your Torn money log...';
+
+    try {
+      const res = await fetch(`${BACKEND}/api/contracts/${currentContractUuid}/verify-payment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      const data = await res.json();
+
+      if (!data.success && !data.already_confirmed) {
+        status.className = 'verify-status error';
+        status.innerHTML = `❌ ${data.error}`;
+        btn.disabled = false;
+        btn.textContent = "I've Sent Payment — Verify Now →";
+        return;
+      }
+
+      // Payment confirmed!
+      document.getElementById('final-contract-id').textContent = `#${currentContractId}`;
+      setModalStep(3);
+
+    } catch (err) {
+      status.className = 'verify-status error';
+      status.innerHTML = '❌ Server error. Please try again.';
+      btn.disabled = false;
+      btn.textContent = "I've Sent Payment — Verify Now →";
+    }
+  }
+
+  function setVerifyStatus(type, msg) {
+    const el = document.getElementById('verify-status');
+    el.className = `verify-status ${type}`;
+    el.innerHTML = msg;
+  }
+
+  // ── Scroll animations ───────────────────────────────────────────
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) e.target.classList.add('visible');
+    });
+  }, { threshold: 0.1 });
+
+  document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+
+  // Close modal on overlay click
+  document.getElementById('checkout-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+  });
+
+  // Init
+  selectType('loss');
+</script>
+</body>
+</html>

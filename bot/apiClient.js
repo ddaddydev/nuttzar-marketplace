@@ -21,6 +21,11 @@ async function getActiveClaims(tornId) {
   return res.data;
 }
 
+async function getBalance(tornId) {
+  const res = await api.get(`/api/users/${tornId}/balance`);
+  return res.data;
+}
+
 async function getActiveContracts(type) {
   const params = type ? { type } : {};
   const res = await api.get('/api/contracts', { params });
@@ -55,6 +60,7 @@ async function getPendingPayouts() {
 module.exports = {
   verifyUser,
   getActiveClaims,
+  getBalance,
   getActiveContracts,
   createClaim,
   completeClaim,

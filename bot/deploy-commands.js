@@ -11,6 +11,10 @@ const commands = [
     description: 'View your current active claims (only visible to you)',
   },
   {
+    name: 'bal',
+    description: 'View your pending payout and net lifetime earnings (only visible to you)',
+  },
+  {
     name: 'contracts',
     description: 'View all active contracts (only visible to you)',
     options: [

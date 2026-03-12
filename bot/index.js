@@ -18,8 +18,10 @@ const {
   buildClaimDmEmbed,
   buildCompleteButton,
   buildPayoutEmbed,
+  buildBalanceEmbed,
   buildVerifySuccessEmbed,
   buildVerifyFailEmbed,
+  buildNoContractsEmbed,
   formatMoney
 } = require('./embeds');
 
@@ -33,9 +35,11 @@ const CHANNEL_IDS = {
   payout: process.env.DISCORD_PAYOUT_CHANNEL
 };
 
-// Track live contract message IDs for updating embeds
-// { contractId: { channelId, messageId } }
+// Track live contract message IDs: { contractId: { channelId, messageId } }
 const contractMessages = new Map();
+
+// Track "no active contracts" placeholder message IDs per type: { type: messageId }
+const placeholderMessages = new Map();
 
 const client = new Client({
   intents: [
@@ -77,7 +81,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
 async function handleSlashCommand(interaction) {
   const { commandName } = interaction;
 
-  // ── /verify ──
   if (commandName === 'verify') {
     const modal = new ModalBuilder()
       .setCustomId('modal_verify')
@@ -96,11 +99,9 @@ async function handleSlashCommand(interaction) {
     await interaction.showModal(modal);
   }
 
-  // ── /myclaims ──
   else if (commandName === 'myclaims') {
     await interaction.deferReply({ ephemeral: true });
 
-    // Look up torn_id from discord_id
     const tornId = await getTornIdFromDiscord(interaction.user.id);
     if (!tornId) {
       return interaction.editReply({ content: '❌ You are not verified. Use `/verify` first.' });
@@ -117,12 +118,9 @@ async function handleSlashCommand(interaction) {
       return `• **Contract #${c.contract_id}** (${c.type}) — ${c.quantity_claimed} unit(s) — ⏱️ ${mins}m left — Payout: **${formatMoney(c.payout_amount)}**`;
     });
 
-    await interaction.editReply({
-      content: `**Your Active Claims:**\n${lines.join('\n')}`
-    });
+    await interaction.editReply({ content: `**Your Active Claims:**\n${lines.join('\n')}` });
   }
 
-  // ── /contracts ──
   else if (commandName === 'contracts') {
     await interaction.deferReply({ ephemeral: true });
     const type = interaction.options.getString('type');
@@ -136,7 +134,6 @@ async function handleSlashCommand(interaction) {
     await interaction.editReply({ embeds });
   }
 
-  // ── /markpaid (admin only) ──
   else if (commandName === 'markpaid') {
     if (interaction.user.id !== ADMIN_DISCORD_ID) {
       return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
@@ -153,12 +150,31 @@ async function handleSlashCommand(interaction) {
     }
   }
 
-  // ── /cancelclaim ──
+  else if (commandName === 'bal') {
+    await interaction.deferReply({ ephemeral: true });
+
+    const tornId = await getTornIdFromDiscord(interaction.user.id);
+    if (!tornId) {
+      return interaction.editReply({ content: '❌ You are not verified. Use `/verify` first.' });
+    }
+
+    const userRes = await require('axios').get(
+      `${process.env.BACKEND_URL}/api/users/by-discord/${interaction.user.id}`
+    ).catch(() => null);
+
+    const tornName = userRes?.data?.torn_name || `User [${tornId}]`;
+    const result = await api.getBalance(tornId);
+
+    if (!result.success) {
+      return interaction.editReply({ content: `❌ Could not fetch balance: ${result.error}` });
+    }
+
+    await interaction.editReply({ embeds: [buildBalanceEmbed(tornName, tornId, result)] });
+  }
+
   else if (commandName === 'cancelclaim') {
     await interaction.deferReply({ ephemeral: true });
     const claimId = interaction.options.getInteger('claim_id');
-
-    // For now just inform — full cancel logic can be added
     await interaction.editReply({
       content: `⚠️ To cancel claim #${claimId}, please contact an admin in #support.\nNote: Repeated cancellations may result in removal from the marketplace.`
     });
@@ -168,7 +184,6 @@ async function handleSlashCommand(interaction) {
 // ── Modal Submit Handler ───────────────────────────────────────────────────────
 async function handleModalSubmit(interaction) {
 
-  // ── Verify modal ──
   if (interaction.customId === 'modal_verify') {
     await interaction.deferReply({ ephemeral: true });
 
@@ -176,20 +191,16 @@ async function handleModalSubmit(interaction) {
     const result = await api.verifyUser(apiKey, interaction.user.id);
 
     if (!result.success) {
-      return interaction.editReply({
-        embeds: [buildVerifyFailEmbed(result.error)]
-      });
+      return interaction.editReply({ embeds: [buildVerifyFailEmbed(result.error)] });
     }
 
-    // Rename Discord nickname to TornName [TornID]
     try {
       const member = await interaction.guild.members.fetch(interaction.user.id);
       await member.setNickname(`${result.torn_name} [${result.torn_id}]`);
     } catch (e) {
-      console.warn('[BOT] Could not set nickname (may lack permission):', e.message);
+      console.warn('[BOT] Could not set nickname:', e.message);
     }
 
-    // Assign Verified Seller role
     try {
       const member = await interaction.guild.members.fetch(interaction.user.id);
       const role = interaction.guild.roles.cache.find(r => r.name === 'Verified Seller');
@@ -198,12 +209,9 @@ async function handleModalSubmit(interaction) {
       console.warn('[BOT] Could not assign role:', e.message);
     }
 
-    await interaction.editReply({
-      embeds: [buildVerifySuccessEmbed(result.torn_name, result.torn_id)]
-    });
+    await interaction.editReply({ embeds: [buildVerifySuccessEmbed(result.torn_name, result.torn_id)] });
   }
 
-  // ── Claim quantity modal ──
   else if (interaction.customId.startsWith('modal_claim_')) {
     await interaction.deferReply({ ephemeral: true });
 
@@ -227,13 +235,10 @@ async function handleModalSubmit(interaction) {
     }
 
     const claim = result.claim;
-
-    // Fetch contract details for the DM
     const contractResult = await api.getActiveContracts();
     const contract = contractResult.contracts?.find(c => c.id === contractId);
 
     if (contract) {
-      // Send DM with instructions + complete button
       try {
         const dmChannel = await interaction.user.createDM();
         await dmChannel.send({
@@ -244,7 +249,6 @@ async function handleModalSubmit(interaction) {
         console.warn('[BOT] Could not DM user:', e.message);
       }
 
-      // Update the contract embed in channel
       await updateContractEmbed(contractId);
     }
 
@@ -257,11 +261,9 @@ async function handleModalSubmit(interaction) {
 // ── Button Handler ─────────────────────────────────────────────────────────────
 async function handleButton(interaction) {
 
-  // ── Claim button on contract embed ──
   if (interaction.customId.startsWith('claim_')) {
     const contractId = parseInt(interaction.customId.replace('claim_', ''));
 
-    // Check if user is verified
     const tornId = await getTornIdFromDiscord(interaction.user.id);
     if (!tornId) {
       return interaction.reply({
@@ -270,14 +272,12 @@ async function handleButton(interaction) {
       });
     }
 
-    // Get contract info for max claim limit
     const contractResult = await api.getActiveContracts();
     const contract = contractResult.contracts?.find(c => c.id === contractId);
     const maxClaim = contract ? (contract.type === 'bounty' ? 10 : 15) : 15;
     const available = contract?.quantity_remaining || 0;
     const maxAllowed = Math.min(maxClaim, available);
 
-    // Show quantity modal
     const modal = new ModalBuilder()
       .setCustomId(`modal_claim_${contractId}`)
       .setTitle(`Claim Contract #${contractId}`);
@@ -295,7 +295,6 @@ async function handleButton(interaction) {
     await interaction.showModal(modal);
   }
 
-  // ── "Click when completed" button in DMs ──
   else if (interaction.customId.startsWith('complete_')) {
     await interaction.deferReply({ ephemeral: true });
     const claimId = parseInt(interaction.customId.replace('complete_', ''));
@@ -316,16 +315,23 @@ async function handleButton(interaction) {
       content: `✅ **Verified!** Your payout of **${formatMoney(result.payout_amount)}** has been queued.\nYou will receive payment in-game from Nuttzar shortly.`
     });
 
-    // Update the contract embed
     if (result.claim?.contract_id) {
-      await updateContractEmbed(result.claim.contract_id);
+      // Check if contract is now fully completed — if so delete embed, show placeholder
+      const contractResult = await api.getActiveContracts();
+      const contract = contractResult.contracts?.find(c => c.id === result.claim.contract_id);
+
+      if (!contract || contract.status === 'completed') {
+        await deleteContractEmbed(result.claim.contract_id);
+        await ensurePlaceholder(result.claim.contract_type || 'loss');
+      } else {
+        await updateContractEmbed(result.claim.contract_id);
+      }
     }
   }
 }
 
 // ── Contract Embed Management ──────────────────────────────────────────────────
 
-// Post or update a contract embed in its channel
 async function postContractEmbed(contract) {
   const channelId = CHANNEL_IDS[contract.type];
   if (!channelId) return;
@@ -333,27 +339,27 @@ async function postContractEmbed(contract) {
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) return;
 
+  // Remove placeholder for this type if it exists
+  await removePlaceholder(contract.type, channel);
+
   const embed = buildContractEmbed(contract);
   const buttons = buildContractButtons(contract);
 
   if (contractMessages.has(contract.id)) {
-    // Update existing message
     const { messageId } = contractMessages.get(contract.id);
     try {
       const msg = await channel.messages.fetch(messageId);
       await msg.edit({ embeds: [embed], components: [buttons] });
       return;
     } catch {
-      // Message was deleted — fall through to post new
+      // Message deleted — fall through to post new
     }
   }
 
-  // Post new message
   const msg = await channel.send({ embeds: [embed], components: [buttons] });
   contractMessages.set(contract.id, { channelId, messageId: msg.id });
 }
 
-// Update a contract's embed after a claim/completion
 async function updateContractEmbed(contractId) {
   try {
     const result = await api.getActiveContracts();
@@ -364,7 +370,59 @@ async function updateContractEmbed(contractId) {
   }
 }
 
-// On startup, refresh all active contract embeds
+async function deleteContractEmbed(contractId) {
+  try {
+    if (!contractMessages.has(contractId)) return;
+    const { channelId, messageId } = contractMessages.get(contractId);
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel) return;
+
+    const msg = await channel.messages.fetch(messageId).catch(() => null);
+    if (msg) await msg.delete();
+
+    contractMessages.delete(contractId);
+    console.log(`[BOT] Deleted embed for completed contract #${contractId}`);
+  } catch (err) {
+    console.error('[BOT] Failed to delete contract embed:', err.message);
+  }
+}
+
+// Post a "no active contracts" placeholder for a type if no contracts exist
+async function ensurePlaceholder(type) {
+  const channelId = CHANNEL_IDS[type];
+  if (!channelId) return;
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel) return;
+
+  // Check if any active contracts of this type still exist
+  const result = await api.getActiveContracts(type);
+  const hasContracts = result.success && result.contracts.length > 0;
+  if (hasContracts) return; // don't post placeholder if contracts still exist
+
+  // Already have a placeholder? Skip
+  if (placeholderMessages.has(type)) return;
+
+  const msg = await channel.send({ embeds: [buildNoContractsEmbed(type)] });
+  placeholderMessages.set(type, msg.id);
+  console.log(`[BOT] Posted placeholder for ${type} channel`);
+}
+
+async function removePlaceholder(type, channel) {
+  if (!placeholderMessages.has(type)) return;
+  try {
+    const msgId = placeholderMessages.get(type);
+    const msg = await channel.messages.fetch(msgId).catch(() => null);
+    if (msg) await msg.delete();
+    placeholderMessages.delete(type);
+    console.log(`[BOT] Removed placeholder for ${type} channel`);
+  } catch (err) {
+    console.warn('[BOT] Could not remove placeholder:', err.message);
+    placeholderMessages.delete(type);
+  }
+}
+
+// On startup: refresh all active embeds and post placeholders for empty channels
 async function refreshAllContractEmbeds() {
   try {
     const result = await api.getActiveContracts();
@@ -374,12 +432,17 @@ async function refreshAllContractEmbeds() {
       await postContractEmbed(contract);
     }
     console.log(`[BOT] Refreshed ${result.contracts.length} contract embed(s)`);
+
+    // Post placeholders for any type with no active contracts
+    for (const type of ['loss', 'bounty', 'escape']) {
+      await ensurePlaceholder(type);
+    }
   } catch (err) {
     console.error('[BOT] Failed to refresh embeds:', err.message);
   }
 }
 
-// ── Payout notification ───────────────────────────────────────────────────────
+// ── Payout notification ────────────────────────────────────────────────────────
 async function sendPayoutNotification(claim, contract, sellerName) {
   try {
     const channel = await client.channels.fetch(CHANNEL_IDS.payout);
@@ -395,10 +458,9 @@ async function sendPayoutNotification(claim, contract, sellerName) {
   }
 }
 
-// ── Helper: get Torn ID from Discord ID via DB ─────────────────────────────────
+// ── Helper: get Torn ID from Discord ID ───────────────────────────────────────
 async function getTornIdFromDiscord(discordId) {
   try {
-    // Use a direct DB lookup via backend
     const result = await require('axios').get(
       `${process.env.BACKEND_URL}/api/users/by-discord/${discordId}`
     );
@@ -408,21 +470,17 @@ async function getTornIdFromDiscord(discordId) {
   }
 }
 
-// ── Backend event listener (when backend emits events) ────────────────────────
-// These are called from the backend when running in the same process
-// When running separately, use webhooks or polling instead
+// ── Backend event listeners ────────────────────────────────────────────────────
 client.on('contract_activated', async (contract) => {
   await postContractEmbed(contract);
 });
 
 client.on('payout_ready', async ({ claim, contract, seller_torn_id }) => {
-  // Look up seller name from DB
   const sellerName = `Seller [${seller_torn_id}]`;
   await sendPayoutNotification(claim, contract, sellerName);
 });
 
 client.on('claim_expired', async (claim) => {
-  // Optionally DM seller to let them know
   try {
     if (claim.seller_discord_id) {
       const user = await client.users.fetch(claim.seller_discord_id);

@@ -1,4 +1,4 @@
-require('dotenv').config({ path: '../backend/.env' });
+require('dotenv').config(); // Railway injects env vars directly; .env fallback for local dev
 
 const {
   Client,

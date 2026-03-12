@@ -266,54 +266,60 @@ async function handleSlashCommand(interaction) {
 
       const axios = require('axios');
 
-      // Pull attacks via v2 (sorted properly)
+      // v1 attacks — confirmed field names: timestamp_started, result, defender_name
       const attackRes = await axios.get(
-        `https://api.torn.com/v2/user/attacks?limit=5&sort=DESC&key=${adminApiKey}`,
+        `https://api.torn.com/user/?selections=attacks&key=${adminApiKey}`,
         { timeout: 8000 }
       ).catch(() => null);
 
-      // Pull bounties placed on others via v1 log selection
+      // v1 log for bounties placed — log type 2309 = bounty placed
       const bountyRes = await axios.get(
         `https://api.torn.com/user/?selections=log&key=${adminApiKey}`,
         { timeout: 8000 }
       ).catch(() => null);
 
-      // Format attacks
+      // Format attacks — sort by timestamp DESC, take 5 most recent
       let attackLines = '❌ Failed to fetch';
       if (attackRes?.data?.attacks) {
-        const attacks = attackRes.data.attacks.slice(0, 5);
+        const attacks = Object.values(attackRes.data.attacks)
+          .sort((a, b) => b.timestamp_started - a.timestamp_started)
+          .slice(0, 5);
         attackLines = attacks.length === 0
           ? 'No recent attacks'
-          : attacks.map(a => {
-              const defender = a.defender?.name || a.defender_name || 'Unknown';
-              const result = a.result || 'Unknown';
-              const ts = a.started_at || a.timestamp_started || 0;
-              return `• vs **${defender}** — \`${result}\` — <t:${ts}:R>`;
-            }).join('\n');
+          : attacks.map(a =>
+              `• vs **${a.defender_name || a.attacker_name || 'Unknown'}** — \`${a.result}\` — <t:${a.timestamp_started}:R>`
+            ).join('\n');
       } else if (attackRes?.data?.error) {
         attackLines = `❌ API Error: ${attackRes.data.error.error}`;
       }
 
-      // Format bounty log — filter for bounty-related entries
+      // Format bounty log entries — filter by log type or title containing bounty
       let bountyLines = '❌ Failed to fetch';
       if (bountyRes?.data?.log) {
         const allLogs = Object.values(bountyRes.data.log);
-        // Filter entries that look like bounty placements
         const bountyLogs = allLogs
           .filter(l => {
-            const title = (l.title || l.log || '').toLowerCase();
-            return title.includes('bounty') || title.includes('placed') || title.includes('bount');
+            const logType = l.log || 0;
+            // Common bounty log types: 2309 (placed), 2310 (claimed), 2311 (expired)
+            return [2309, 2310, 2311, 2312].includes(logType);
           })
           .sort((a, b) => b.timestamp - a.timestamp)
           .slice(0, 5);
 
-        bountyLines = bountyLogs.length === 0
-          ? 'No bounty log entries found (may need Log access on API key)'
-          : bountyLogs.map(l =>
-              `• <t:${l.timestamp}:R> — \`${l.title || l.log || JSON.stringify(l.data || {}).slice(0, 60)}\``
-            ).join('\n');
+        if (bountyLogs.length === 0) {
+          // Show raw log types to help identify the right ones
+          const sample = allLogs
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .slice(0, 3)
+            .map(l => `• <t:${l.timestamp}:R> — log type \`${l.log}\` — \`${JSON.stringify(l.data || {}).slice(0, 50)}\``);
+          bountyLines = `No bounty logs found. Recent log types for reference:\n${sample.join('\n')}`;
+        } else {
+          bountyLines = bountyLogs.map(l =>
+            `• <t:${l.timestamp}:R> — \`${JSON.stringify(l.data || {}).slice(0, 80)}\``
+          ).join('\n');
+        }
       } else if (bountyRes?.data?.error) {
-        bountyLines = `❌ API Error: ${bountyRes.data.error.error}`;
+        bountyLines = `❌ API Error: ${bountyRes.data.error.error}\n(Make sure your API key has **Log** access)`;
       }
 
       await interaction.editReply({

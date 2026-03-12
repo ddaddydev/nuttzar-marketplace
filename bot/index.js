@@ -54,6 +54,8 @@ const client = new Client({
 client.once(Events.ClientReady, async () => {
   console.log(`[BOT] Logged in as ${client.user.tag}`);
   await refreshAllContractEmbeds();
+  setInterval(pollPayouts, 30000); // check for new payouts every 30 seconds
+  console.log('[BOT] Payout poller started');
 });
 
 // ── Slash Commands ─────────────────────────────────────────────────────────────
@@ -356,6 +358,12 @@ async function postContractEmbed(contract) {
     }
   }
 
+  // Ping Verified Sellers role on new contract
+  const verifiedRole = channel.guild.roles.cache.find(r => r.name === 'Verified Seller');
+  const ping = verifiedRole ? `<@&${verifiedRole.id}> ` : '';
+  const typeLabel = contract.type.charAt(0).toUpperCase() + contract.type.slice(1);
+  await channel.send(`${ping}🆕 New **${typeLabel}** contract is live — $${Number(contract.price_per_unit).toLocaleString()} per unit!`);
+
   const msg = await channel.send({ embeds: [embed], components: [buttons] });
   contractMessages.set(contract.id, { channelId, messageId: msg.id });
 }
@@ -490,6 +498,43 @@ client.on('claim_expired', async (claim) => {
 
   await updateContractEmbed(claim.contract_id);
 });
+
+// ── Payout Poller (runs every 30s, catches payouts backend can't emit directly) ─
+const notifiedPayouts = new Set();
+
+async function pollPayouts() {
+  try {
+    const result = await api.getPendingPayouts();
+    if (!result.success || !result.payouts.length) return;
+
+    for (const payout of result.payouts) {
+      if (notifiedPayouts.has(payout.id)) continue;
+
+      const contract = await api.getActiveContracts()
+        .then(r => r.contracts?.find(c => c.id === payout.contract_id))
+        .catch(() => null);
+
+      const fakeClaim = {
+        id: payout.claim_id,
+        seller_torn_id: payout.seller_torn_id,
+        payout_amount: payout.amount,
+        quantity_claimed: '?'
+      };
+
+      const fakeContract = contract || {
+        id: payout.contract_id,
+        type: payout.contract_type || 'loss',
+        target_torn_name: 'Unknown',
+        target_torn_id: '0'
+      };
+
+      await sendPayoutNotification(fakeClaim, fakeContract, payout.seller_torn_id);
+      notifiedPayouts.add(payout.id);
+    }
+  } catch (err) {
+    console.error('[BOT] Payout poll error:', err.message);
+  }
+}
 
 // ── Login ──────────────────────────────────────────────────────────────────────
 client.login(process.env.DISCORD_BOT_TOKEN);

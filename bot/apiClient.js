@@ -48,7 +48,7 @@ async function completeClaim(claimId) {
 }
 
 async function markPayoutSent(payoutId) {
-  const res = await api.post(`/api/payouts/${payoutId}/sent`);
+  const res = await api.post(`/api/claims/payouts/${payoutId}/sent`);
   return res.data;
 }
 

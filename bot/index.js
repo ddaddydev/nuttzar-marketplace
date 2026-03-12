@@ -266,60 +266,47 @@ async function handleSlashCommand(interaction) {
 
       const axios = require('axios');
 
-      // v1 attacks — confirmed field names: timestamp_started, result, defender_name
+      // v2 attacksfull
       const attackRes = await axios.get(
-        `https://api.torn.com/user/?selections=attacks&key=${adminApiKey}`,
+        `https://api.torn.com/v2/user/attacksfull?limit=20&sort=DESC&comment=NSH&key=${adminApiKey}`,
         { timeout: 8000 }
       ).catch(() => null);
 
-      // v1 log for bounties placed — log type 2309 = bounty placed
+      // v2 bounties on admin's torn ID
       const bountyRes = await axios.get(
-        `https://api.torn.com/user/?selections=log&key=${adminApiKey}`,
+        `https://api.torn.com/v2/user/${ADMIN_TORN_ID}/bounties?comment=NSH&key=${adminApiKey}`,
         { timeout: 8000 }
       ).catch(() => null);
 
-      // Format attacks — sort by timestamp DESC, take 5 most recent
+      // Format attacks — v2: array, attacker.id / defender.id, started
       let attackLines = '❌ Failed to fetch';
       if (attackRes?.data?.attacks) {
-        const attacks = Object.values(attackRes.data.attacks)
-          .sort((a, b) => b.timestamp_started - a.timestamp_started)
-          .slice(0, 5);
+        const attacks = attackRes.data.attacks.slice(0, 5);
         attackLines = attacks.length === 0
-          ? 'No recent attacks'
-          : attacks.map(a =>
-              `• vs **${a.defender_name || a.attacker_name || 'Unknown'}** — \`${a.result}\` — <t:${a.timestamp_started}:R>`
-            ).join('\n');
+          ? 'No recent attacks found'
+          : attacks.map(a => {
+              const iAmAttacker = a.attacker?.id === parseInt(ADMIN_TORN_ID);
+              const opponentId = iAmAttacker ? a.defender?.id : a.attacker?.id;
+              const dir = iAmAttacker ? '⚔️' : '🛡️';
+              return `${dir} vs **[${opponentId || 'Unknown'}]** — \`${a.result}\` — <t:${a.started}:R>`;
+            }).join('\n');
       } else if (attackRes?.data?.error) {
         attackLines = `❌ API Error: ${attackRes.data.error.error}`;
       }
 
-      // Format bounty log entries — filter by log type or title containing bounty
+      // v2 bounties on admin's torn ID
       let bountyLines = '❌ Failed to fetch';
-      if (bountyRes?.data?.log) {
-        const allLogs = Object.values(bountyRes.data.log);
-        const bountyLogs = allLogs
-          .filter(l => {
-            const logType = l.log || 0;
-            // Common bounty log types: 2309 (placed), 2310 (claimed), 2311 (expired)
-            return [2309, 2310, 2311, 2312].includes(logType);
-          })
-          .sort((a, b) => b.timestamp - a.timestamp)
-          .slice(0, 5);
-
-        if (bountyLogs.length === 0) {
-          // Show raw log types to help identify the right ones
-          const sample = allLogs
-            .sort((a, b) => b.timestamp - a.timestamp)
-            .slice(0, 3)
-            .map(l => `• <t:${l.timestamp}:R> — log type \`${l.log}\` — \`${JSON.stringify(l.data || {}).slice(0, 50)}\``);
-          bountyLines = `No bounty logs found. Recent log types for reference:\n${sample.join('\n')}`;
+      if (bountyRes?.data) {
+        if (bountyRes.data.error) {
+          bountyLines = `❌ API Error: ${bountyRes.data.error.error}`;
         } else {
-          bountyLines = bountyLogs.map(l =>
-            `• <t:${l.timestamp}:R> — \`${JSON.stringify(l.data || {}).slice(0, 80)}\``
-          ).join('\n');
+          const bounties = bountyRes.data.bounties || [];
+          bountyLines = bounties.length === 0
+            ? 'No active bounties on your account'
+            : bounties.map(b =>
+                `• **${b.lister_name}** placed $${Number(b.reward).toLocaleString()} x${b.quantity} — reason: \`${b.reason || 'none'}\``
+              ).join('\n');
         }
-      } else if (bountyRes?.data?.error) {
-        bountyLines = `❌ API Error: ${bountyRes.data.error.error}\n(Make sure your API key has **Log** access)`;
       }
 
       await interaction.editReply({

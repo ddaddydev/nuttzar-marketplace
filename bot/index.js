@@ -148,48 +148,46 @@ async function handleSlashCommand(interaction) {
     const payoutId = interaction.options.getInteger('payout_id');
     const result = await api.markPayoutSent(payoutId);
 
-    if (result.success) {
-      await interaction.editReply({ content: `✅ Payout #${payoutId} marked as sent.` });
+    if (!result.success) {
+      return interaction.editReply({ content: `❌ ${result.error}` });
+    }
 
-      // Delete the payout message from the payout channel
-      if (payoutMessages.has(payoutId)) {
-        try {
-          const { channelId, messageId } = payoutMessages.get(payoutId);
-          const channel = await client.channels.fetch(channelId).catch(() => null);
-          if (channel) {
-            const msg = await channel.messages.fetch(messageId).catch(() => null);
-            if (msg) await msg.delete();
-          }
-          payoutMessages.delete(payoutId);
-        } catch (e) {
-          console.warn('[BOT] Could not delete payout message:', e.message);
-        }
-      }
+    await interaction.editReply({ content: `✅ Payout #${payoutId} marked as sent.` });
 
-      // DM the seller
+    // Delete the payout message from the payout channel
+    if (payoutMessages.has(payoutId)) {
       try {
-        const payout = result.payout;
-        if (payout?.seller_torn_id) {
-          const db = require('./db/schema') ;
-          // find discord_id from torn_id via backend
-          const userRes = await require('axios').get(
-            `${process.env.BACKEND_URL}/api/users/by-torn/${payout.seller_torn_id}`
-          ).catch(() => null);
-          const discordId = userRes?.data?.discord_id;
-          if (discordId) {
-            const user = await client.users.fetch(discordId).catch(() => null);
-            if (user) {
-              await user.send(
-                `💰 **Payout Sent!**\n\nYour payout of **$${Number(payout.amount).toLocaleString()}** has been sent in-game from Nuttzar.\nCheck your Torn inbox!\n\n*Payout ID: #${payoutId}*`
-              );
-            }
+        const { channelId, messageId } = payoutMessages.get(payoutId);
+        const channel = await client.channels.fetch(channelId).catch(() => null);
+        if (channel) {
+          const msg = await channel.messages.fetch(messageId).catch(() => null);
+          if (msg) await msg.delete();
+        }
+        payoutMessages.delete(payoutId);
+      } catch (e) {
+        console.warn('[BOT] Could not delete payout message:', e.message);
+      }
+    }
+
+    // DM the seller — wrapped in its own try/catch so failure doesn't break markpaid
+    try {
+      const payout = result.payout;
+      if (payout?.seller_torn_id) {
+        const userRes = await require('axios').get(
+          `${process.env.BACKEND_URL}/api/users/by-torn/${payout.seller_torn_id}`
+        ).catch(() => null);
+        const discordId = userRes?.data?.discord_id;
+        if (discordId) {
+          const user = await client.users.fetch(discordId).catch(() => null);
+          if (user) {
+            await user.send(
+              `💰 **Payout Sent!**\n\nYour payout of **$${Number(payout.amount).toLocaleString()}** has been sent in-game from Nuttzar.\nCheck your Torn inbox!\n\n*Payout ID: #${payoutId}*`
+            );
           }
         }
-      } catch (e) {
-        console.warn('[BOT] Could not DM seller:', e.message);
       }
-    } else {
-      await interaction.editReply({ content: `❌ ${result.error}` });
+    } catch (e) {
+      console.warn('[BOT] Could not DM seller:', e.message);
     }
   }
 
@@ -230,37 +228,53 @@ async function handleSlashCommand(interaction) {
 
       const axios = require('axios');
 
-      // Pull attack log
+      // Pull attacks via v2 (sorted properly)
       const attackRes = await axios.get(
-        `https://api.torn.com/user/?selections=attacks&key=${adminApiKey}`,
+        `https://api.torn.com/v2/user/attacks?limit=5&sort=DESC&key=${adminApiKey}`,
         { timeout: 8000 }
-      ).catch(e => ({ error: e.message }));
+      ).catch(() => null);
 
-      // Pull bounty log (v2 cat 26)
+      // Pull bounties placed on others via v1 log selection
       const bountyRes = await axios.get(
-        `https://api.torn.com/v2/user/log?cat=26&limit=10&key=${adminApiKey}`,
+        `https://api.torn.com/user/?selections=log&key=${adminApiKey}`,
         { timeout: 8000 }
-      ).catch(e => ({ error: e.message }));
+      ).catch(() => null);
 
-      // Format last 5 attacks
+      // Format attacks
       let attackLines = '❌ Failed to fetch';
-      if (attackRes.data?.attacks) {
-        const attacks = Object.values(attackRes.data.attacks).slice(0, 5);
-        attackLines = attacks.length === 0 ? 'No recent attacks' : attacks.map(a =>
-          `• vs **${a.defender_name || a.attacker_name}** — \`${a.result}\` — <t:${a.timestamp_started}:R>`
-        ).join('\n');
-      } else if (attackRes.data?.error) {
+      if (attackRes?.data?.attacks) {
+        const attacks = attackRes.data.attacks.slice(0, 5);
+        attackLines = attacks.length === 0
+          ? 'No recent attacks'
+          : attacks.map(a => {
+              const defender = a.defender?.name || a.defender_name || 'Unknown';
+              const result = a.result || 'Unknown';
+              const ts = a.started_at || a.timestamp_started || 0;
+              return `• vs **${defender}** — \`${result}\` — <t:${ts}:R>`;
+            }).join('\n');
+      } else if (attackRes?.data?.error) {
         attackLines = `❌ API Error: ${attackRes.data.error.error}`;
       }
 
-      // Format last 5 bounty log entries
+      // Format bounty log — filter for bounty-related entries
       let bountyLines = '❌ Failed to fetch';
-      if (bountyRes.data?.log) {
-        const logs = Object.values(bountyRes.data.log).slice(0, 5);
-        bountyLines = logs.length === 0 ? 'No recent bounty logs' : logs.map(l =>
-          `• <t:${l.timestamp}:R> — \`${JSON.stringify(l.params).slice(0, 80)}\``
-        ).join('\n');
-      } else if (bountyRes.data?.error) {
+      if (bountyRes?.data?.log) {
+        const allLogs = Object.values(bountyRes.data.log);
+        // Filter entries that look like bounty placements
+        const bountyLogs = allLogs
+          .filter(l => {
+            const title = (l.title || l.log || '').toLowerCase();
+            return title.includes('bounty') || title.includes('placed') || title.includes('bount');
+          })
+          .sort((a, b) => b.timestamp - a.timestamp)
+          .slice(0, 5);
+
+        bountyLines = bountyLogs.length === 0
+          ? 'No bounty log entries found (may need Log access on API key)'
+          : bountyLogs.map(l =>
+              `• <t:${l.timestamp}:R> — \`${l.title || l.log || JSON.stringify(l.data || {}).slice(0, 60)}\``
+            ).join('\n');
+      } else if (bountyRes?.data?.error) {
         bountyLines = `❌ API Error: ${bountyRes.data.error.error}`;
       }
 
@@ -269,16 +283,8 @@ async function handleSlashCommand(interaction) {
           color: 0x3498db,
           title: '🔧 API Test Results',
           fields: [
-            {
-              name: '⚔️ Last 5 Attacks',
-              value: attackLines,
-              inline: false
-            },
-            {
-              name: '💀 Last 5 Bounty Log Entries',
-              value: bountyLines,
-              inline: false
-            }
+            { name: '⚔️ Last 5 Attacks', value: attackLines, inline: false },
+            { name: '💀 Last 5 Bounty Log Entries', value: bountyLines, inline: false }
           ],
           footer: { text: 'Nuttzar Marketplace • Admin Only' },
           timestamp: new Date().toISOString()
@@ -428,9 +434,15 @@ async function handleButton(interaction) {
       });
     }
 
-    await interaction.editReply({
-      content: `✅ **Verified!** Your payout of **${formatMoney(result.payout_amount)}** has been queued.\nYou will receive payment in-game from Nuttzar shortly.`
-    });
+    if (result.partial) {
+      await interaction.editReply({
+        content: `⚠️ **Partial Completion**\n\nVerified **${result.credited}** out of your claimed units.\n💰 Partial payout of **$${Number(result.payout_amount).toLocaleString()}** has been queued.\n📦 **${result.returned}** unit(s) have been returned to the contract pool.`
+      });
+    } else {
+      await interaction.editReply({
+        content: `✅ **Verified!** Your payout of **${formatMoney(result.payout_amount)}** has been queued.\nYou will receive payment in-game from Nuttzar shortly.`
+      });
+    }
 
     if (result.claim?.contract_id) {
       // Check if contract is now fully completed — if so delete embed, show placeholder
@@ -571,9 +583,9 @@ async function sendPayoutNotification(fakeClaim, fakeContract, sellerTornId, pay
     const channel = await client.channels.fetch(CHANNEL_IDS.payout);
     if (!channel) return;
 
-    const embed = buildPayoutEmbed(fakeClaim, fakeContract, sellerTornId);
+    const embed = buildPayoutEmbed(fakeClaim, fakeContract, sellerTornId, payoutId);
     const msg = await channel.send({
-      content: `<@${ADMIN_DISCORD_ID}> 💰 **New payout required!**`,
+      content: `<@${ADMIN_DISCORD_ID}> 💰 **New payout required! Use \`/markpaid ${payoutId}\` once sent.**`,
       embeds: [embed]
     });
 

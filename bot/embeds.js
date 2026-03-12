@@ -166,11 +166,12 @@ function buildCompleteButton(claimId) {
   );
 }
 
-function buildPayoutEmbed(claim, contract, sellerName) {
+function buildPayoutEmbed(claim, contract, sellerName, payoutId) {
   return new EmbedBuilder()
     .setColor(0xf1c40f)
     .setTitle(`💰  PAYOUT REQUIRED — Contract #${contract.id}`)
     .addFields(
+      { name: '🆔 Payout ID', value: `**#${payoutId}** ← use this with \`/markpaid\``, inline: false },
       { name: 'Seller', value: `${sellerName} [${claim.seller_torn_id}]`, inline: true },
       { name: 'Amount to Send', value: `**${formatMoney(claim.payout_amount)}**`, inline: true },
       { name: 'Contract Type', value: contract.type.charAt(0).toUpperCase() + contract.type.slice(1), inline: true },
@@ -179,7 +180,7 @@ function buildPayoutEmbed(claim, contract, sellerName) {
       { name: 'Target', value: `${contract.target_torn_name} [${contract.target_torn_id}]`, inline: true }
     )
     .setTimestamp()
-    .setFooter({ text: 'Use /markpaid <payout_id> once sent' });
+    .setFooter({ text: `Use /markpaid ${payoutId} once sent` });
 }
 
 function buildBalanceEmbed(tornName, tornId, balance) {

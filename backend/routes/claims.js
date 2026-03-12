@@ -16,14 +16,12 @@ const { getDb } = require('../db/schema');
 router.post('/', async (req, res) => {
   try {
     const { contract_id, seller_torn_id, seller_discord_id, quantity_claimed } = req.body;
-
     const claim = claimUnits(
       parseInt(contract_id),
       String(seller_torn_id),
       seller_discord_id,
       parseInt(quantity_claimed)
     );
-
     res.json({ success: true, claim });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
@@ -75,41 +73,80 @@ router.post('/:id/complete', async (req, res) => {
 
     if (contract.type === 'loss') {
       verification = await verifyAttackLog(
-        apiKey,
-        contract.target_torn_id,
-        claim.quantity_claimed,
-        claim.claimed_at,
-        sellerName,
-        contract.id
+        apiKey, contract.target_torn_id, claim.quantity_claimed,
+        claim.claimed_at, sellerName, contract.id, claimId, db
       );
     } else if (contract.type === 'escape') {
       verification = await verifyEscapeLog(
-        apiKey,
-        contract.buyer_torn_id,
-        claim.quantity_claimed,
-        claim.claimed_at,
-        sellerName,
-        contract.id
+        apiKey, contract.buyer_torn_id, claim.quantity_claimed,
+        claim.claimed_at, sellerName, contract.id, claimId, db
       );
     } else if (contract.type === 'bounty') {
       verification = await verifyBountyLog(
-        apiKey,
-        contract.target_torn_id,
-        claim.quantity_claimed,
-        claim.claimed_at,
-        sellerName,
-        contract.id
+        apiKey, contract.target_torn_id, claim.quantity_claimed,
+        claim.claimed_at, sellerName, contract.id, claimId, db
       );
     }
 
-    if (!verification.verified) {
+    // Nothing verified at all
+    if (verification.count === 0) {
       return res.status(400).json({
         success: false,
-        error: `Verification failed. Found ${verification.count}/${verification.needed} confirmed actions.`,
-        details: verification
+        error: `No completed actions found. Found ${verification.count}/${verification.needed}.`
       });
     }
 
+    // Partial completion — credit what they did, return the rest to the pool
+    if (verification.partial) {
+      const credited = verification.count;
+      const returned = claim.quantity_claimed - credited;
+      const partialPayout = Math.floor((claim.payout_amount / claim.quantity_claimed) * credited);
+
+      // Update claim to reflect partial
+      db.prepare(`
+        UPDATE claims SET
+          quantity_claimed = ?,
+          quantity_verified = ?,
+          payout_amount = ?,
+          status = 'partial',
+          completed_at = unixepoch()
+        WHERE id = ?
+      `).run(credited, credited, partialPayout, claimId);
+
+      // Return unfinished units back to the contract pool
+      db.prepare(`
+        UPDATE contracts SET
+          quantity_remaining = quantity_remaining + ?,
+          updated_at = unixepoch()
+        WHERE id = ?
+      `).run(returned, contract.id);
+
+      // Queue partial payout
+      db.prepare(`
+        INSERT INTO payouts (claim_id, contract_id, seller_torn_id, seller_torn_name, amount, status)
+        VALUES (?, ?, ?, ?, ?, 'pending')
+      `).run(claimId, contract.id, claim.seller_torn_id, sellerName, partialPayout);
+
+      if (global.discordBot) {
+        global.discordBot.emit('payout_ready', {
+          claim: getClaim(claimId),
+          contract,
+          seller_torn_id: claim.seller_torn_id
+        });
+      }
+
+      return res.json({
+        success: true,
+        partial: true,
+        message: `Partial completion: verified ${credited}/${claim.quantity_claimed} units. ${returned} unit(s) returned to the pool.`,
+        credited,
+        returned,
+        payout_amount: partialPayout,
+        claim: getClaim(claimId)
+      });
+    }
+
+    // Full completion
     const result = completeClaim(claimId);
 
     if (global.discordBot) {
@@ -122,6 +159,7 @@ router.post('/:id/complete', async (req, res) => {
 
     res.json({
       success: true,
+      partial: false,
       message: 'Verified! Payout has been queued.',
       payout_amount: claim.payout_amount,
       claim: result.claim

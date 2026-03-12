@@ -21,14 +21,14 @@ function getDb() {
 
 function initSchema() {
   db.exec(`
-    -- Users table (both buyers and sellers)
+    -- Users table
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       torn_id TEXT UNIQUE NOT NULL,
       torn_name TEXT,
       discord_id TEXT UNIQUE,
       encrypted_api_key TEXT,
-      role TEXT DEFAULT 'unverified', -- 'admin', 'seller', 'buyer', 'unverified'
+      role TEXT DEFAULT 'unverified',
       is_verified INTEGER DEFAULT 0,
       created_at INTEGER DEFAULT (unixepoch()),
       updated_at INTEGER DEFAULT (unixepoch())
@@ -42,35 +42,24 @@ function initSchema() {
       status TEXT DEFAULT 'pending_payment' CHECK(status IN (
         'pending_payment', 'active', 'completed', 'cancelled', 'expired'
       )),
-
-      -- Buyer info
       buyer_torn_id TEXT NOT NULL,
       buyer_torn_name TEXT,
-
-      -- Target info (for bounties, also for losses/escapes)
       target_torn_id TEXT,
       target_torn_name TEXT,
-
-      -- Pricing
-      price_per_unit INTEGER NOT NULL,       -- what seller receives per unit
-      buyer_price_per_unit INTEGER NOT NULL, -- price_per_unit / 0.9 (gross before fee)
-      bounty_amount INTEGER DEFAULT 0,       -- extra for bounty contracts
+      price_per_unit INTEGER NOT NULL,
+      buyer_price_per_unit INTEGER NOT NULL,
+      bounty_amount INTEGER DEFAULT 0,
       quantity INTEGER NOT NULL,
       quantity_remaining INTEGER NOT NULL,
       quantity_completed INTEGER DEFAULT 0,
-
-      -- Payment
-      total_amount INTEGER NOT NULL,         -- what buyer sends to Nuttzar
+      total_amount INTEGER NOT NULL,
       payment_confirmed INTEGER DEFAULT 0,
       payment_confirmed_at INTEGER,
-
-      -- Discord embed message IDs for updating
       discord_message_id TEXT,
       discord_channel_id TEXT,
-
       created_at INTEGER DEFAULT (unixepoch()),
       updated_at INTEGER DEFAULT (unixepoch()),
-      expires_at INTEGER                     -- null = never expires
+      expires_at INTEGER
     );
 
     -- Claims table
@@ -82,18 +71,18 @@ function initSchema() {
       quantity_claimed INTEGER NOT NULL,
       quantity_verified INTEGER DEFAULT 0,
       status TEXT DEFAULT 'active' CHECK(status IN (
-        'active', 'completed', 'expired', 'failed'
+        'active', 'completed', 'partial', 'expired', 'failed'
       )),
       claimed_at INTEGER DEFAULT (unixepoch()),
-      expires_at INTEGER NOT NULL,           -- claimed_at + 1800 (30 min)
+      expires_at INTEGER NOT NULL,
       completed_at INTEGER,
-      payout_amount INTEGER,                 -- total to pay seller
+      payout_amount INTEGER,
       payout_sent INTEGER DEFAULT 0,
       payout_sent_at INTEGER,
-      dm_message_id TEXT                     -- discord DM message id for updating
+      dm_message_id TEXT
     );
 
-    -- Payout queue table (your manual payout list)
+    -- Payout queue table
     CREATE TABLE IF NOT EXISTS payouts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       claim_id INTEGER NOT NULL REFERENCES claims(id),
@@ -107,6 +96,17 @@ function initSchema() {
       sent_at INTEGER
     );
 
+    -- Used attack IDs — prevents reuse of the same attack across multiple claims
+    CREATE TABLE IF NOT EXISTS used_attack_ids (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      attack_id TEXT NOT NULL,
+      claim_id INTEGER NOT NULL REFERENCES claims(id),
+      contract_id INTEGER NOT NULL REFERENCES contracts(id),
+      seller_torn_id TEXT NOT NULL,
+      created_at INTEGER DEFAULT (unixepoch()),
+      UNIQUE(attack_id)
+    );
+
     -- Transaction log
     CREATE TABLE IF NOT EXISTS transaction_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,7 +114,7 @@ function initSchema() {
       contract_id INTEGER,
       claim_id INTEGER,
       torn_id TEXT,
-      details TEXT,                          -- JSON string
+      details TEXT,
       created_at INTEGER DEFAULT (unixepoch())
     );
 
@@ -125,6 +125,8 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_claims_seller ON claims(seller_torn_id);
     CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
     CREATE INDEX IF NOT EXISTS idx_payouts_status ON payouts(status);
+    CREATE INDEX IF NOT EXISTS idx_used_attacks ON used_attack_ids(attack_id);
+    CREATE INDEX IF NOT EXISTS idx_used_attacks_seller ON used_attack_ids(seller_torn_id);
   `);
 
   console.log('[DB] Schema initialized');

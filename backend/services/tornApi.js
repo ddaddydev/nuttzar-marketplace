@@ -4,7 +4,6 @@ const TORN_API_BASE = 'https://api.torn.com';
 const ADMIN_TORN_ID = '4042794';
 const FRAUD_ALERT_CHANNEL = '1481475449182748797';
 
-// Helper to send fraud alert to admin channel via bot
 async function sendFraudAlert(message) {
   try {
     if (global.discordBot) {
@@ -18,12 +17,8 @@ async function sendFraudAlert(message) {
 
 async function verifyApiKey(apiKey) {
   try {
-    const res = await axios.get(`${TORN_API_BASE}/user/?selections=basic&key=${apiKey}`, {
-      timeout: 8000
-    });
-
+    const res = await axios.get(`${TORN_API_BASE}/user/?selections=basic&key=${apiKey}`, { timeout: 8000 });
     if (res.data.error) return { valid: false, error: res.data.error.error };
-
     return {
       valid: true,
       torn_id: String(res.data.player_id),
@@ -41,14 +36,8 @@ async function getTornDiscordLink(tornId, apiKey) {
       `${TORN_API_BASE}/v2/user/${tornId}/discord?comment=NUTTSERVICE&key=${apiKey}`,
       { timeout: 8000 }
     );
-
     if (res.data.error) return { linked: false, error: res.data.error.error };
-
-    return {
-      linked: true,
-      discord_id: res.data.discord?.discordID || null,
-      torn_id: String(tornId)
-    };
+    return { linked: true, discord_id: res.data.discord?.discordID || null, torn_id: String(tornId) };
   } catch (err) {
     return { linked: false, error: 'Failed to reach Torn API' };
   }
@@ -63,18 +52,14 @@ async function verifyPayment(buyerApiKey, expectedAmount) {
         `${TORN_API_BASE}/v2/user/log?cat=100&limit=100&key=${buyerApiKey}`,
         { timeout: 8000 }
       );
-
       if (!v2.data.error) {
-        const logs = v2.data.log || {};
-        for (const entry of Object.values(logs)) {
+        for (const entry of Object.values(v2.data.log || {})) {
           const params = entry.params || {};
           if (
             entry.timestamp >= cutoff &&
             String(params.to_id || params.recipient || '') === ADMIN_TORN_ID &&
             (params.amount === expectedAmount || params.money === expectedAmount)
-          ) {
-            return { verified: true, entry };
-          }
+          ) return { verified: true, entry };
         }
       }
     } catch (_) {}
@@ -83,81 +68,67 @@ async function verifyPayment(buyerApiKey, expectedAmount) {
       `${TORN_API_BASE}/user/?selections=moneyTransfers&key=${buyerApiKey}`,
       { timeout: 8000 }
     );
-
     if (v1.data.error) return { verified: false, error: v1.data.error.error };
 
-    const transfers = v1.data.money_transfers || {};
-    for (const transfer of Object.values(transfers)) {
+    for (const transfer of Object.values(v1.data.money_transfers || {})) {
       if (
         transfer.type === 'sent' &&
         String(transfer.to_id) === ADMIN_TORN_ID &&
         transfer.amount === expectedAmount &&
         transfer.timestamp >= cutoff
-      ) {
-        return { verified: true, transfer };
-      }
+      ) return { verified: true, transfer };
     }
 
-    return {
-      verified: false,
-      error: 'Payment not found — send the exact amount within the last hour.'
-    };
+    return { verified: false, error: 'Payment not found — send the exact amount within the last hour.' };
   } catch (err) {
     return { verified: false, error: 'Failed to reach Torn API' };
   }
 }
 
-// Verify loss contract — seller must have LOST to target (result: 'Lost' or 'Attacked' with hospital)
-// Flags fraud if seller WON (defeated the buyer/target)
-async function verifyAttackLog(sellerApiKey, targetTornId, requiredCount, afterTimestamp, sellerName, contractId) {
+// Verify loss contract — returns count of valid unused losses
+// Partial: if seller did fewer than claimed, credit what they did and return the rest
+async function verifyAttackLog(sellerApiKey, targetTornId, requiredCount, afterTimestamp, sellerName, contractId, claimId, db) {
   try {
     const res = await axios.get(
       `${TORN_API_BASE}/user/?selections=attacks&key=${sellerApiKey}`,
       { timeout: 8000 }
     );
-
-    if (res.data.error) {
-      return { verified: false, count: 0, error: res.data.error.error };
-    }
+    if (res.data.error) return { verified: false, count: 0, error: res.data.error.error };
 
     const attacks = res.data.attacks || {};
     let count = 0;
+    const validAttackIds = [];
     const fraudAttacks = [];
 
-    for (const attack of Object.values(attacks)) {
+    for (const [attackId, attack] of Object.entries(attacks)) {
       if (
         String(attack.defender_id) === String(targetTornId) &&
         attack.timestamp_started >= afterTimestamp
       ) {
         const result = (attack.result || '').toLowerCase();
 
-        // Valid loss results
-        if (
-          result === 'lost' ||
-          result === 'attacked' ||
-          result === 'hospitalized' ||
-          result === 'stalemate'
-        ) {
+        // Check if this attack ID was already used in a previous claim
+        const alreadyUsed = db.prepare(
+          `SELECT id FROM used_attack_ids WHERE attack_id = ?`
+        ).get(String(attackId));
+
+        if (alreadyUsed) continue; // skip — already counted
+
+        if (result === 'lost' || result === 'attacked' || result === 'hospitalized' || result === 'stalemate') {
+          validAttackIds.push(String(attackId));
           count++;
         }
 
-        // Fraud — seller won/defeated the target instead of losing
-        if (
-          result === 'attacked and won' ||
-          result === 'won' ||
-          result === 'mugged' ||
-          result === 'arrested'
-        ) {
+        if (result === 'attacked and won' || result === 'won' || result === 'mugged' || result === 'arrested') {
           fraudAttacks.push(attack);
         }
       }
     }
 
-    // Send fraud alert if seller won against target
     if (fraudAttacks.length > 0) {
       await sendFraudAlert(
         `🚨 **FRAUD ALERT — Loss Contract #${contractId}**\n` +
-        `Seller **${sellerName || sellerApiKey}** appears to have **defeated** the target instead of losing!\n` +
+        `Seller **${sellerName || 'Unknown'}** defeated the target instead of losing!\n` +
         `Target ID: \`${targetTornId}\`\n` +
         `Suspicious attacks: **${fraudAttacks.length}**\n` +
         `Results: ${fraudAttacks.map(a => a.result).join(', ')}\n` +
@@ -165,47 +136,63 @@ async function verifyAttackLog(sellerApiKey, targetTornId, requiredCount, afterT
       );
     }
 
-    return { verified: count >= requiredCount, count, needed: requiredCount };
+    // Credit only what they did (up to requiredCount)
+    const credited = Math.min(count, requiredCount);
+    const usedIds = validAttackIds.slice(0, credited);
+
+    // Mark those attack IDs as used
+    for (const attackId of usedIds) {
+      db.prepare(`
+        INSERT OR IGNORE INTO used_attack_ids (attack_id, claim_id, contract_id, seller_torn_id)
+        VALUES (?, ?, ?, ?)
+      `).run(attackId, claimId, contractId, sellerName);
+    }
+
+    return {
+      verified: credited >= requiredCount,
+      count: credited,
+      needed: requiredCount,
+      partial: credited > 0 && credited < requiredCount,
+      usedIds
+    };
   } catch (err) {
     return { verified: false, count: 0, error: 'Failed to reach Torn API' };
   }
 }
 
-// Verify escape contract — seller must have ESCAPED (result: 'Escape')
-// Flags fraud if seller was defeated instead of escaping (NSH/NST = no-show)
-async function verifyEscapeLog(sellerApiKey, buyerTornId, requiredCount, afterTimestamp, sellerName, contractId) {
+// Verify escape contract
+async function verifyEscapeLog(sellerApiKey, buyerTornId, requiredCount, afterTimestamp, sellerName, contractId, claimId, db) {
   try {
     const res = await axios.get(
       `${TORN_API_BASE}/user/?selections=attacks&key=${sellerApiKey}`,
       { timeout: 8000 }
     );
-
-    if (res.data.error) {
-      return { verified: false, count: 0, error: res.data.error.error };
-    }
+    if (res.data.error) return { verified: false, count: 0, error: res.data.error.error };
 
     const attacks = res.data.attacks || {};
     let count = 0;
+    const validAttackIds = [];
     const fraudAttacks = [];
 
-    for (const attack of Object.values(attacks)) {
+    for (const [attackId, attack] of Object.entries(attacks)) {
       if (
         String(attack.attacker_id) === String(buyerTornId) &&
         attack.timestamp_started >= afterTimestamp
       ) {
         const result = (attack.result || '').toLowerCase();
 
+        const alreadyUsed = db.prepare(
+          `SELECT id FROM used_attack_ids WHERE attack_id = ?`
+        ).get(String(attackId));
+
+        if (alreadyUsed) continue;
+
         if (result === 'escape') {
+          validAttackIds.push(String(attackId));
           count++;
         }
 
-        // Fraud — seller got defeated instead of escaping
-        if (
-          result === 'lost' ||
-          result === 'attacked' ||
-          result === 'hospitalized' ||
-          result === 'mugged'
-        ) {
+        if (result === 'lost' || result === 'attacked' || result === 'hospitalized' || result === 'mugged') {
           fraudAttacks.push(attack);
         }
       }
@@ -214,7 +201,7 @@ async function verifyEscapeLog(sellerApiKey, buyerTornId, requiredCount, afterTi
     if (fraudAttacks.length > 0) {
       await sendFraudAlert(
         `🚨 **FRAUD ALERT — Escape Contract #${contractId}**\n` +
-        `Seller **${sellerName || 'Unknown'}** was **defeated** instead of escaping!\n` +
+        `Seller **${sellerName || 'Unknown'}** was defeated instead of escaping!\n` +
         `Buyer ID: \`${buyerTornId}\`\n` +
         `Failed escapes: **${fraudAttacks.length}**\n` +
         `Results: ${fraudAttacks.map(a => a.result).join(', ')}\n` +
@@ -222,57 +209,87 @@ async function verifyEscapeLog(sellerApiKey, buyerTornId, requiredCount, afterTi
       );
     }
 
-    return { verified: count >= requiredCount, count, needed: requiredCount };
+    const credited = Math.min(count, requiredCount);
+    const usedIds = validAttackIds.slice(0, credited);
+
+    for (const attackId of usedIds) {
+      db.prepare(`
+        INSERT OR IGNORE INTO used_attack_ids (attack_id, claim_id, contract_id, seller_torn_id)
+        VALUES (?, ?, ?, ?)
+      `).run(attackId, claimId, contractId, sellerName);
+    }
+
+    return {
+      verified: credited >= requiredCount,
+      count: credited,
+      needed: requiredCount,
+      partial: credited > 0 && credited < requiredCount,
+      usedIds
+    };
   } catch (err) {
     return { verified: false, count: 0, error: 'Failed to reach Torn API' };
   }
 }
 
-// Verify bounty contract — check Torn log for bounty placements (cat 26)
-// Also checks for NST (no show) and NSH patterns
-async function verifyBountyLog(sellerApiKey, targetTornId, requiredCount, afterTimestamp, sellerName, contractId) {
+// Verify bounty contract
+async function verifyBountyLog(sellerApiKey, targetTornId, requiredCount, afterTimestamp, sellerName, contractId, claimId, db) {
   try {
-    // Try v2 log with bounty category
     const res = await axios.get(
       `${TORN_API_BASE}/v2/user/log?cat=26&limit=100&key=${sellerApiKey}`,
       { timeout: 8000 }
     );
-
-    if (res.data.error) {
-      return { verified: false, count: 0, error: res.data.error.error };
-    }
+    if (res.data.error) return { verified: false, count: 0, error: res.data.error.error };
 
     const logs = res.data.log || {};
     let count = 0;
-    const nstEntries = [];
+    const validIds = [];
+    const nshEntries = [];
 
-    for (const entry of Object.values(logs)) {
+    for (const [logId, entry] of Object.entries(logs)) {
       if (entry.timestamp < afterTimestamp) continue;
 
       const params = entry.params || {};
       const logText = JSON.stringify(params).toLowerCase();
 
-      // Check target ID match
+      const alreadyUsed = db.prepare(
+        `SELECT id FROM used_attack_ids WHERE attack_id = ?`
+      ).get(String(logId));
+
+      if (alreadyUsed) continue;
+
       if (String(params.target_id || params.user_id || params.id || '') === String(targetTornId)) {
+        validIds.push(String(logId));
         count += params.quantity || params.amount || 1;
       }
 
-      // Flag NSH (no show hospital) patterns
       if (logText.includes('nsh') || logText.includes('no show hospital')) {
-        nstEntries.push(entry);
+        nshEntries.push(entry);
       }
     }
 
-    if (nstEntries.length > 0) {
+    if (nshEntries.length > 0) {
       await sendFraudAlert(
         `⚠️ **NSH ALERT — Bounty Contract #${contractId}**\n` +
         `Seller **${sellerName || 'Unknown'}** may have used NSH on target \`${targetTornId}\`!\n` +
-        `Flagged entries: **${nstEntries.length}**\n` +
+        `Flagged entries: **${nshEntries.length}**\n` +
         `<@${ADMIN_TORN_ID}> please review manually.`
       );
     }
 
-    return { verified: count >= requiredCount, count, needed: requiredCount };
+    const credited = Math.min(count, requiredCount);
+    for (const logId of validIds.slice(0, credited)) {
+      db.prepare(`
+        INSERT OR IGNORE INTO used_attack_ids (attack_id, claim_id, contract_id, seller_torn_id)
+        VALUES (?, ?, ?, ?)
+      `).run(logId, claimId, contractId, sellerName);
+    }
+
+    return {
+      verified: credited >= requiredCount,
+      count: credited,
+      needed: requiredCount,
+      partial: credited > 0 && credited < requiredCount,
+    };
   } catch (err) {
     return { verified: false, count: 0, error: 'Failed to reach Torn API' };
   }
@@ -284,13 +301,8 @@ async function getUserInfo(tornId, adminApiKey) {
       `${TORN_API_BASE}/user/${tornId}?selections=basic&key=${adminApiKey}`,
       { timeout: 8000 }
     );
-
     if (res.data.error) return null;
-
-    return {
-      torn_id: String(res.data.player_id),
-      torn_name: res.data.name
-    };
+    return { torn_id: String(res.data.player_id), torn_name: res.data.name };
   } catch {
     return null;
   }

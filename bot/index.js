@@ -38,6 +38,9 @@ const CHANNEL_IDS = {
 // Track live contract message IDs: { contractId: { channelId, messageId } }
 const contractMessages = new Map();
 
+// Track payout message IDs so we can delete them after markpaid: { payoutId: messageId }
+const payoutMessages = new Map();
+
 // Track "no active contracts" placeholder message IDs per type: { type: messageId }
 const placeholderMessages = new Map();
 
@@ -147,6 +150,44 @@ async function handleSlashCommand(interaction) {
 
     if (result.success) {
       await interaction.editReply({ content: `✅ Payout #${payoutId} marked as sent.` });
+
+      // Delete the payout message from the payout channel
+      if (payoutMessages.has(payoutId)) {
+        try {
+          const { channelId, messageId } = payoutMessages.get(payoutId);
+          const channel = await client.channels.fetch(channelId).catch(() => null);
+          if (channel) {
+            const msg = await channel.messages.fetch(messageId).catch(() => null);
+            if (msg) await msg.delete();
+          }
+          payoutMessages.delete(payoutId);
+        } catch (e) {
+          console.warn('[BOT] Could not delete payout message:', e.message);
+        }
+      }
+
+      // DM the seller
+      try {
+        const payout = result.payout;
+        if (payout?.seller_torn_id) {
+          const db = require('./db/schema') ;
+          // find discord_id from torn_id via backend
+          const userRes = await require('axios').get(
+            `${process.env.BACKEND_URL}/api/users/by-torn/${payout.seller_torn_id}`
+          ).catch(() => null);
+          const discordId = userRes?.data?.discord_id;
+          if (discordId) {
+            const user = await client.users.fetch(discordId).catch(() => null);
+            if (user) {
+              await user.send(
+                `💰 **Payout Sent!**\n\nYour payout of **$${Number(payout.amount).toLocaleString()}** has been sent in-game from Nuttzar.\nCheck your Torn inbox!\n\n*Payout ID: #${payoutId}*`
+              );
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[BOT] Could not DM seller:', e.message);
+      }
     } else {
       await interaction.editReply({ content: `❌ ${result.error}` });
     }
@@ -172,6 +213,80 @@ async function handleSlashCommand(interaction) {
     }
 
     await interaction.editReply({ embeds: [buildBalanceEmbed(tornName, tornId, result)] });
+  }
+
+  else if (commandName === 'testapi') {
+    if (interaction.user.id !== ADMIN_DISCORD_ID) {
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const adminApiKey = process.env.ADMIN_API_KEY;
+      if (!adminApiKey) {
+        return interaction.editReply({ content: '❌ `ADMIN_API_KEY` not set in environment variables.' });
+      }
+
+      const axios = require('axios');
+
+      // Pull attack log
+      const attackRes = await axios.get(
+        `https://api.torn.com/user/?selections=attacks&key=${adminApiKey}`,
+        { timeout: 8000 }
+      ).catch(e => ({ error: e.message }));
+
+      // Pull bounty log (v2 cat 26)
+      const bountyRes = await axios.get(
+        `https://api.torn.com/v2/user/log?cat=26&limit=10&key=${adminApiKey}`,
+        { timeout: 8000 }
+      ).catch(e => ({ error: e.message }));
+
+      // Format last 5 attacks
+      let attackLines = '❌ Failed to fetch';
+      if (attackRes.data?.attacks) {
+        const attacks = Object.values(attackRes.data.attacks).slice(0, 5);
+        attackLines = attacks.length === 0 ? 'No recent attacks' : attacks.map(a =>
+          `• vs **${a.defender_name || a.attacker_name}** — \`${a.result}\` — <t:${a.timestamp_started}:R>`
+        ).join('\n');
+      } else if (attackRes.data?.error) {
+        attackLines = `❌ API Error: ${attackRes.data.error.error}`;
+      }
+
+      // Format last 5 bounty log entries
+      let bountyLines = '❌ Failed to fetch';
+      if (bountyRes.data?.log) {
+        const logs = Object.values(bountyRes.data.log).slice(0, 5);
+        bountyLines = logs.length === 0 ? 'No recent bounty logs' : logs.map(l =>
+          `• <t:${l.timestamp}:R> — \`${JSON.stringify(l.params).slice(0, 80)}\``
+        ).join('\n');
+      } else if (bountyRes.data?.error) {
+        bountyLines = `❌ API Error: ${bountyRes.data.error.error}`;
+      }
+
+      await interaction.editReply({
+        embeds: [{
+          color: 0x3498db,
+          title: '🔧 API Test Results',
+          fields: [
+            {
+              name: '⚔️ Last 5 Attacks',
+              value: attackLines,
+              inline: false
+            },
+            {
+              name: '💀 Last 5 Bounty Log Entries',
+              value: bountyLines,
+              inline: false
+            }
+          ],
+          footer: { text: 'Nuttzar Marketplace • Admin Only' },
+          timestamp: new Date().toISOString()
+        }]
+      });
+    } catch (err) {
+      await interaction.editReply({ content: `❌ Error: ${err.message}` });
+    }
   }
 
   else if (commandName === 'cancelclaim') {
@@ -451,16 +566,18 @@ async function refreshAllContractEmbeds() {
 }
 
 // ── Payout notification ────────────────────────────────────────────────────────
-async function sendPayoutNotification(claim, contract, sellerName) {
+async function sendPayoutNotification(fakeClaim, fakeContract, sellerTornId, payoutId) {
   try {
     const channel = await client.channels.fetch(CHANNEL_IDS.payout);
     if (!channel) return;
 
-    const embed = buildPayoutEmbed(claim, contract, sellerName);
-    await channel.send({
+    const embed = buildPayoutEmbed(fakeClaim, fakeContract, sellerTornId);
+    const msg = await channel.send({
       content: `<@${ADMIN_DISCORD_ID}> 💰 **New payout required!**`,
       embeds: [embed]
     });
+
+    if (payoutId) payoutMessages.set(payoutId, { channelId: CHANNEL_IDS.payout, messageId: msg.id });
   } catch (err) {
     console.error('[BOT] Failed to send payout notification:', err.message);
   }
@@ -528,7 +645,7 @@ async function pollPayouts() {
         target_torn_id: '0'
       };
 
-      await sendPayoutNotification(fakeClaim, fakeContract, payout.seller_torn_id);
+      await sendPayoutNotification(fakeClaim, fakeContract, payout.seller_torn_id, payout.id);
       notifiedPayouts.add(payout.id);
     }
   } catch (err) {

@@ -8,11 +8,11 @@ const {
   markPayoutSent,
   getContract
 } = require('../services/contracts');
-const { verifyAttackLog, verifyEscapeLog } = require('../services/tornApi');
+const { verifyAttackLog, verifyEscapeLog, verifyBountyLog } = require('../services/tornApi');
 const { decrypt } = require('../services/encryption');
 const { getDb } = require('../db/schema');
 
-// POST /api/claims - seller claims units (also called by Discord bot)
+// POST /api/claims
 router.post('/', async (req, res) => {
   try {
     const { contract_id, seller_torn_id, seller_discord_id, quantity_claimed } = req.body;
@@ -30,7 +30,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-// GET /api/claims/:id - get claim details
+// GET /api/claims/:id
 router.get('/:id', (req, res) => {
   try {
     const claim = getClaim(parseInt(req.params.id));
@@ -41,7 +41,7 @@ router.get('/:id', (req, res) => {
   }
 });
 
-// POST /api/claims/:id/complete - seller marks done, triggers API verification
+// POST /api/claims/:id/complete
 router.post('/:id/complete', async (req, res) => {
   try {
     const claimId = parseInt(req.params.id);
@@ -52,18 +52,15 @@ router.post('/:id/complete', async (req, res) => {
       return res.status(400).json({ success: false, error: `Claim is ${claim.status}` });
     }
 
-    // Check if claim has expired
     const now = Math.floor(Date.now() / 1000);
     if (now > claim.expires_at) {
       return res.status(400).json({ success: false, error: 'Claim has expired (30 min window passed)' });
     }
 
     const contract = getContract(claim.contract_id);
-
-    // Get seller's encrypted API key
     const db = getDb();
-    const seller = db.prepare(`SELECT * FROM users WHERE torn_id = ?`).get(claim.seller_torn_id);
 
+    const seller = db.prepare(`SELECT * FROM users WHERE torn_id = ?`).get(claim.seller_torn_id);
     if (!seller?.encrypted_api_key) {
       return res.status(400).json({
         success: false,
@@ -72,30 +69,36 @@ router.post('/:id/complete', async (req, res) => {
     }
 
     const apiKey = decrypt(seller.encrypted_api_key);
+    const sellerName = seller.torn_name || claim.seller_torn_id;
 
-    // Verify based on contract type
     let verification;
+
     if (contract.type === 'loss') {
       verification = await verifyAttackLog(
         apiKey,
         contract.target_torn_id,
         claim.quantity_claimed,
-        claim.claimed_at
+        claim.claimed_at,
+        sellerName,
+        contract.id
       );
     } else if (contract.type === 'escape') {
       verification = await verifyEscapeLog(
         apiKey,
         contract.buyer_torn_id,
         claim.quantity_claimed,
-        claim.claimed_at
+        claim.claimed_at,
+        sellerName,
+        contract.id
       );
     } else if (contract.type === 'bounty') {
-      // For bounties: check attack log against target
-      verification = await verifyAttackLog(
+      verification = await verifyBountyLog(
         apiKey,
         contract.target_torn_id,
         claim.quantity_claimed,
-        claim.claimed_at
+        claim.claimed_at,
+        sellerName,
+        contract.id
       );
     }
 
@@ -107,10 +110,8 @@ router.post('/:id/complete', async (req, res) => {
       });
     }
 
-    // Complete the claim
     const result = completeClaim(claimId);
 
-    // Notify Discord bot to ping payout queue
     if (global.discordBot) {
       global.discordBot.emit('payout_ready', {
         claim: result.claim,
@@ -130,7 +131,7 @@ router.post('/:id/complete', async (req, res) => {
   }
 });
 
-// GET /api/payouts - admin: get pending payouts
+// GET /api/claims/payouts/pending
 router.get('/payouts/pending', (req, res) => {
   try {
     const payouts = getPendingPayouts();
@@ -140,7 +141,7 @@ router.get('/payouts/pending', (req, res) => {
   }
 });
 
-// POST /api/payouts/:id/sent - admin: mark payout as sent
+// POST /api/claims/payouts/:id/sent
 router.post('/payouts/:id/sent', (req, res) => {
   try {
     const payout = markPayoutSent(parseInt(req.params.id));

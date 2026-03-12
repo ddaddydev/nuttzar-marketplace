@@ -33,6 +33,19 @@ router.post('/verify', async (req, res) => {
   }
 });
 
+// GET /api/users/by-torn/:torn_id
+router.get('/by-torn/:torn_id', (req, res) => {
+  try {
+    const db = getDb();
+    const user = db.prepare(`SELECT torn_id, torn_name, discord_id, role FROM users WHERE torn_id = ?`)
+      .get(req.params.torn_id);
+    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+    res.json({ success: true, ...user });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // GET /api/users/by-discord/:discord_id
 router.get('/by-discord/:discord_id', (req, res) => {
   try {

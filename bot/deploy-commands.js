@@ -44,6 +44,10 @@ const commands = [
     ]
   },
   {
+    name: 'testapi',
+    description: '[ADMIN] Test Torn API — pulls your recent attacks and bounty logs',
+  },
+  {
     name: 'cancelclaim',
     description: 'Cancel one of your active claims (releases units back)',
     options: [

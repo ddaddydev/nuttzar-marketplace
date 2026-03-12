@@ -20,6 +20,10 @@ function getAttackLink(targetTornId) {
   return `https://www.torn.com/loader.php?sid=attack&user2ID=${targetTornId}`;
 }
 
+function getBountyLink(targetTornId) {
+  return `https://www.torn.com/bounties.php?p=add&XID=${targetTornId}`;
+}
+
 function buildNoContractsEmbed(type) {
   const emoji = TYPE_EMOJI[type];
   const typeLabel = type.charAt(0).toUpperCase() + type.slice(1);
@@ -41,6 +45,9 @@ function buildContractEmbed(contract) {
   const color = TYPE_COLORS[contract.type];
   const typeLabel = contract.type.charAt(0).toUpperCase() + contract.type.slice(1);
   const attackLink = getAttackLink(contract.target_torn_id);
+  const bountyLink = getBountyLink(contract.target_torn_id);
+  const actionLink = contract.type === 'bounty' ? bountyLink : attackLink;
+  const actionLabel = contract.type === 'bounty' ? '💀 Add Bounty Here' : '⚔️ Attack Here';
 
   const total = contract.quantity;
   const remaining = contract.quantity_remaining;
@@ -55,7 +62,7 @@ function buildContractEmbed(contract) {
   if (contract.target_torn_name && contract.target_torn_id) {
     embed.addFields({
       name: 'Target',
-      value: `${contract.target_torn_name} [${contract.target_torn_id}]\n[⚔️ Attack Here](${attackLink})`,
+      value: `${contract.target_torn_name} [${contract.target_torn_id}]\n[${actionLabel}](${actionLink})`,
       inline: true
     });
   }
@@ -107,6 +114,9 @@ function buildClaimDmEmbed(claim, contract) {
   const emoji = TYPE_EMOJI[contract.type];
   const typeLabel = contract.type.charAt(0).toUpperCase() + contract.type.slice(1);
   const attackLink = getAttackLink(contract.target_torn_id);
+  const bountyLink = getBountyLink(contract.target_torn_id);
+  const actionLink = contract.type === 'bounty' ? bountyLink : attackLink;
+  const actionLabel = contract.type === 'bounty' ? '💀 Add Bounty Here' : '⚔️ Attack Here';
 
   const embed = new EmbedBuilder()
     .setColor(0x2ecc71)
@@ -115,7 +125,7 @@ function buildClaimDmEmbed(claim, contract) {
     .addFields(
       {
         name: 'Target',
-        value: `${contract.target_torn_name} [${contract.target_torn_id}]\n[⚔️ Attack Here](${attackLink})`,
+        value: `${contract.target_torn_name} [${contract.target_torn_id}]\n[${actionLabel}](${actionLink})`,
         inline: true
       },
       { name: 'Units Claimed', value: `${claim.quantity_claimed}`, inline: true },
@@ -138,7 +148,7 @@ function buildClaimDmEmbed(claim, contract) {
   } else if (contract.type === 'bounty') {
     embed.addFields({
       name: '📋 Instructions',
-      value: `Place a bounty on **${contract.target_torn_name} [${contract.target_torn_id}]** and fulfill ${claim.quantity_claimed} slot(s).\n[⚔️ View Target](${attackLink})`,
+      value: `Place a bounty on **${contract.target_torn_name} [${contract.target_torn_id}]** and fulfill ${claim.quantity_claimed} slot(s).\n[💀 Add Bounty Here](${bountyLink})\n⚠️ NSH bounties are flagged automatically.`,
       inline: false
     });
   }

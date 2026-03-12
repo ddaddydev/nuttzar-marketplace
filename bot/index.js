@@ -53,11 +53,49 @@ const client = new Client({
   ]
 });
 
+// ── Purge all bot messages from a channel on startup ──────────────────────────
+async function purgeOldBotMessages(channelId) {
+  if (!channelId) return;
+  try {
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel) return;
+
+    // Fetch up to 100 recent messages
+    const messages = await channel.messages.fetch({ limit: 100 });
+    const botMessages = messages.filter(m => m.author.id === client.user.id);
+
+    if (botMessages.size === 0) return;
+
+    // Bulk delete if messages are under 14 days old, otherwise delete individually
+    const bulkable = botMessages.filter(m => Date.now() - m.createdTimestamp < 14 * 24 * 60 * 60 * 1000);
+    const old = botMessages.filter(m => Date.now() - m.createdTimestamp >= 14 * 24 * 60 * 60 * 1000);
+
+    if (bulkable.size > 1) await channel.bulkDelete(bulkable).catch(() => {});
+    else if (bulkable.size === 1) await bulkable.first().delete().catch(() => {});
+
+    for (const msg of old.values()) await msg.delete().catch(() => {});
+
+    console.log(`[BOT] Purged ${botMessages.size} old message(s) from channel ${channelId}`);
+  } catch (err) {
+    console.warn(`[BOT] Could not purge channel ${channelId}:`, err.message);
+  }
+}
+
 // ── Ready ──────────────────────────────────────────────────────────────────────
 client.once(Events.ClientReady, async () => {
   console.log(`[BOT] Logged in as ${client.user.tag}`);
+
+  // Purge old bot messages from all channels on redeploy
+  console.log('[BOT] Purging old messages...');
+  await Promise.all([
+    purgeOldBotMessages(CHANNEL_IDS.loss),
+    purgeOldBotMessages(CHANNEL_IDS.bounty),
+    purgeOldBotMessages(CHANNEL_IDS.escape),
+    purgeOldBotMessages(CHANNEL_IDS.payout)
+  ]);
+
   await refreshAllContractEmbeds();
-  setInterval(pollPayouts, 30000); // check for new payouts every 30 seconds
+  setInterval(pollPayouts, 30000);
   console.log('[BOT] Payout poller started');
 });
 
@@ -489,7 +527,7 @@ async function postContractEmbed(contract) {
   const verifiedRole = channel.guild.roles.cache.find(r => r.name === 'Verified Seller');
   const ping = verifiedRole ? `<@&${verifiedRole.id}> ` : '';
   const typeLabel = contract.type.charAt(0).toUpperCase() + contract.type.slice(1);
-  await channel.send(`${ping}🆕 New **${typeLabel}** contract is live — $${Number(contract.price_per_unit).toLocaleString()} per unit!`);
+  const pingMsg = await channel.send(`${ping}🆕 New **${typeLabel}** contract is live — $${Number(contract.price_per_unit).toLocaleString()} per unit!`);
 
   const msg = await channel.send({ embeds: [embed], components: [buttons] });
   contractMessages.set(contract.id, { channelId, messageId: msg.id });

@@ -29,6 +29,7 @@ const CHANNEL_IDS = {
   bounty:    process.env.DISCORD_BOUNTY_CHANNEL,
   escape:    process.env.DISCORD_ESCAPE_CHANNEL,
   payout:    process.env.DISCORD_PAYOUT_CHANNEL,
+  alerts:    '1481475449182748797', // failed/partial/wrong-outcome claim alerts
   howToSell: '1481079970490220686',
   flight:    '1482148186138214494',
 };
@@ -51,8 +52,10 @@ const client = new Client({
 });
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
-const get  = (url, opts = {}) => axios.get(url,  { timeout: 5000, ...opts }).catch(() => null);
-const post = (url, data, opts = {}) => axios.post(url, data, { timeout: 5000, ...opts }).catch(() => null);
+const _ikey = () => ({ 'x-internal-key': process.env.INTERNAL_API_KEY || '' });
+const get   = (url, opts = {})       => axios.get(url,  { timeout: 5000, headers: _ikey(), ...opts }).catch(() => null);
+const post  = (url, data, opts = {}) => axios.post(url, data,  { timeout: 5000, headers: _ikey(), ...opts }).catch(() => null);
+const patch = (url, data, opts = {}) => axios.patch(url, data, { timeout: 5000, headers: _ikey(), ...opts }).catch(() => null);
 
 async function getTornId(discordId) {
   const r = await get(`${BACKEND}/api/users/by-discord/${discordId}`);
@@ -647,7 +650,7 @@ async function handleButton(interaction) {
     const [, itemId] = id.split(':');
     const prefs  = await getFlightPrefs(interaction.user.id);
     const subbed = prefs.subscribed_items.map(String).includes(String(itemId));
-    const res    = await post(`${BACKEND}/api/flight-prefs/${interaction.user.id}/subscriptions`,
+    const res    = await patch(`${BACKEND}/api/flight-prefs/${interaction.user.id}/subscriptions`,
       { item_id: itemId, subscribed: !subbed });
     if (!res) return interaction.reply({ content: '❌ Could not update. Try `/flightsetup` first.', ephemeral: true });
     return interaction.reply({
@@ -699,6 +702,38 @@ async function handleButton(interaction) {
 // ── Backend event hooks ───────────────────────────────────────────────────────
 client.on('contract_activated', contract => postContractEmbed(contract));
 client.on('payout_ready', ({ claim, contract, seller_torn_id }) => sendPayoutNotification(claim, contract, seller_torn_id));
+
+client.on('claim_alert', async ({ type, claim, contract, message, credited, returned }) => {
+  try {
+    const ch = await client.channels.fetch(CHANNEL_IDS.alerts).catch(() => null);
+    if (!ch) return;
+
+    const colors  = { wrong_outcome: 0xE74C3C, partial: 0xF39C12, failed: 0xE74C3C };
+    const titles  = { wrong_outcome: '🚨 Wrong Outcome Detected', partial: '⚠️ Partial Completion', failed: '❌ Claim Verification Failed' };
+
+    const fields = [
+      { name: 'Seller Torn ID', value: `[${claim.seller_torn_id}](https://www.torn.com/profiles.php?XID=${claim.seller_torn_id})`, inline: true },
+      { name: 'Contract',       value: `#${contract.id} · ${contract.type}`, inline: true },
+      { name: 'Target',         value: `${contract.target_torn_name} [${contract.target_torn_id}]`, inline: true },
+      { name: 'Details',        value: message, inline: false },
+    ];
+
+    if (type === 'partial') {
+      fields.push({ name: 'Credited / Returned', value: `${credited} credited · ${returned} back to pool`, inline: false });
+    }
+
+    await ch.send({
+      content: `<@${ADMIN_DISCORD_ID}>`,
+      embeds: [{
+        color: colors[type] || 0x95A5A6,
+        title: titles[type] || '⚠️ Claim Alert',
+        fields,
+        footer: { text: `Claim #${claim.id} · ${new Date().toUTCString()}` },
+      }],
+    });
+  } catch (e) { console.error('[BOT] claim_alert:', e.message); }
+});
+
 client.on('claim_expired', async claim => {
   try {
     if (claim.seller_discord_id) {

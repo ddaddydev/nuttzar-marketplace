@@ -9,7 +9,8 @@ const CRIMES_CHANNEL_ID   = '1482356802682224792';
 const CALENDAR_CHANNEL_ID = '1482356667059536024';
 const LOOT_FIGHTER_ROLE   = '1482357456591130694';
 const CRIME_ROLE          = '1482357406313873498';
-const CASH_THRESHOLD      = 85;
+const CASH_THRESHOLD      = 80;  // default threshold — adjust 70-90 to taste
+const BEACH_THRESHOLD     = 70;  // search_the_beach specifically (Shore Thing merit)
 
 // ── NPC definitions ───────────────────────────────────────────────────────────
 // hosp_out timestamp + offset (seconds) = loot level time
@@ -112,12 +113,36 @@ async function buildLootEmbed() {
 // ── Recurring events ──────────────────────────────────────────────────────────
 // day: 0=Sun … 6=Sat (UTC)
 const EVENTS = [
-  { name:'Double Nerve',         day:5, hour:0,  emoji:'⚡' },
-  { name:'Double Energy',        day:6, hour:0,  emoji:'🔋' },
-  { name:'Blood on the Streets', day:1, hour:0,  emoji:'🩸' },
-  { name:'Points Sale',          day:2, hour:0,  emoji:'💎' },
-  { name:'Faction Bonus',        day:4, hour:0,  emoji:'⚔️' },
-  { name:'Chain Bonus Weekend',  day:5, hour:0,  emoji:'🔗' },
+  {
+    name: 'Double Nerve',
+    day: 5, hour: 0, emoji: '⚡',
+    desc: 'All nerve costs halved — best time to grind crimes, OCs, or burn nerve on anything pricey.',
+  },
+  {
+    name: 'Double Energy',
+    day: 6, hour: 0, emoji: '🔋',
+    desc: 'Energy gives double the XP and gym gains. Best day to train or chain.',
+  },
+  {
+    name: 'Blood on the Streets',
+    day: 1, hour: 0, emoji: '🩸',
+    desc: 'Mugging pays double. Good day to mug targets for easy cash.',
+  },
+  {
+    name: 'Points Sale',
+    day: 2, hour: 0, emoji: '💎',
+    desc: 'Torn points go on sale. Stock up on refills, stat enhancers, or resell for profit.',
+  },
+  {
+    name: 'Faction Bonus',
+    day: 4, hour: 0, emoji: '⚔️',
+    desc: 'Faction respect gains are boosted. Good day to chain or run OCs with your faction.',
+  },
+  {
+    name: 'Chain Bonus Weekend',
+    day: 5, hour: 0, emoji: '🔗',
+    desc: 'Chain bonuses are doubled Fri–Sun. Coordinate with your faction for big respect gains.',
+  },
 ];
 
 function nextOccurrence({ day, hour = 0, minute = 0 }) {
@@ -132,35 +157,53 @@ function nextOccurrence({ day, hour = 0, minute = 0 }) {
   return Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(), hour, minute);
 }
 
-function fmtEvent(ms) {
-  const d = new Date(ms);
-  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  return `${days[d.getUTCDay()]} ${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')} TCT`;
+// Returns "in X days Y hrs" or "in Xh Ym" or "in Xm" depending on how far away
+function fmtTimeUntil(ms) {
+  const secs = Math.max(0, Math.round((ms - Date.now()) / 1000));
+  if (secs < 60)   return 'less than a minute';
+  const mins  = Math.floor(secs / 60);
+  const hours = Math.floor(mins / 60);
+  const days  = Math.floor(hours / 24);
+  const remH  = hours % 24;
+  const remM  = mins % 60;
+  if (days > 0)   return `in **${days}d ${remH}h**`;
+  if (hours > 0)  return `in **${hours}h ${String(remM).padStart(2,'0')}m**`;
+  return `in **${mins}m**`;
 }
 
 // ── Build calendar embed ──────────────────────────────────────────────────────
 function buildCalendarEmbed() {
-  const now    = new Date();
-  const tct    = `${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')}:${String(now.getUTCSeconds()).padStart(2,'0')}`;
+  const now     = new Date();
+  // TCT clock — only show HH:MM, updates every 15 min so seconds aren't shown
+  const tct     = `${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')} TCT`;
+
   const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
   const toReset  = Math.max(0, Math.round((midnight - Date.now()) / 1000));
-  const rH = Math.floor(toReset / 3600), rM = Math.floor((toReset % 3600) / 60), rS = toReset % 60;
-  const resetStr = `${rH}h ${String(rM).padStart(2,'0')}m ${String(rS).padStart(2,'0')}s`;
+  const rH = Math.floor(toReset / 3600), rM = Math.floor((toReset % 3600) / 60);
+  const resetStr = `${rH}h ${String(rM).padStart(2,'0')}m`;
 
   const events = EVENTS.map(e => ({ ...e, nextMs: nextOccurrence(e) })).sort((a, b) => a.nextMs - b.nextMs);
   const next   = events[0];
 
   return {
-    color: 0x3498DB, title: `🕐 ${tct} TCT`,
+    color: 0x3498DB,
+    title: `🕐 ${tct}`,
     description:
-      `🔄 Daily reset in **${resetStr}**\n` +
-      `📍 Next: ${next.emoji} **${next.name}** — ${fmtEvent(next.nextMs)}`,
+      `🔄 Daily reset ${fmtTimeUntil(midnight)} · **${resetStr}** left
+` +
+      `📍 Next up: ${next.emoji} **${next.name}** — ${fmtTimeUntil(next.nextMs)}`,
     fields: [{
       name: '📅 Upcoming Events',
-      value: events.map(e => `${e.emoji} **${e.name}** — ${fmtEvent(e.nextMs)}`).join('\n'),
+      value: events.map(e =>
+        `${e.emoji} **${e.name}** — ${fmtTimeUntil(e.nextMs)}
+` +
+        `　*${e.desc}*`
+      ).join('
+
+'),
       inline: false,
     }],
-    footer: { text: 'TCT = UTC · All times are scheduled · Updates every 60s' },
+    footer: { text: 'TCT = UTC · Recurring weekly events · Updates every 15 minutes' },
     timestamp: new Date().toISOString(),
   };
 }
@@ -197,9 +240,12 @@ function buildCrimesEmbed(crimesData) {
     };
   }
 
-  // Search for cash — alert when percentage >= threshold
+  // Search for cash — beach uses lower threshold for Shore Thing merit grind
   const hotSearch = Object.entries(crimesData.searchforcash || {})
-    .filter(([, d]) => d?.percentage >= CASH_THRESHOLD)
+    .filter(([key, d]) => {
+      const threshold = key === 'search_the_beach' ? BEACH_THRESHOLD : CASH_THRESHOLD;
+      return d?.percentage >= threshold;
+    })
     .map(([key, d]) => ({ name: fmtKey(key), pct: d.percentage, title: d.title || '' }))
     .sort((a, b) => b.pct - a.pct);
 
@@ -226,7 +272,7 @@ function buildCrimesEmbed(crimesData) {
       { name: `💰 Search for Cash (≥${CASH_THRESHOLD}%)`,  value: searchLines,   inline: false },
       { name: '🏪 Shoplifting (All Guards/Cameras Off)',    value: shopliftLines, inline: false },
     ],
-    footer: { text: 'Updates every 5 minutes · Torn API' },
+    footer: { text: `Beach ≥${BEACH_THRESHOLD}% · Other search ≥${CASH_THRESHOLD}% · Shoplifting all-clear · Updates every 5m` },
     timestamp: new Date().toISOString(),
   };
 }

@@ -17,6 +17,7 @@ let calendarMsgId = null;
 let levelMsgIds   = []; // array — 3 embeds
 
 let _prevCrimesAlert = false;
+let _crimesPingMsgId = null; // track ping so we can delete it when alert clears
 
 // ── Generic upsert — edit if we have message ID, otherwise post fresh ─────────
 async function upsertEmbed(client, channelId, getMsgId, setMsgId, embed, components) {
@@ -82,8 +83,27 @@ async function refreshCrimes(client) {
       embed, crimeSignupRow()
     );
 
-    // Only ping role on state transition (no alert → alert), not every refresh
-    if (isNewAlert) await ch.send({ content: `<@&${CRIME_ROLE}> 🚨 Crime opportunity is live!` });
+    // Only ping on new alert. Delete old ping first so channel stays clean.
+    if (isNewAlert) {
+      if (_crimesPingMsgId) {
+        try {
+          const old = await ch.messages.fetch(_crimesPingMsgId);
+          await old.delete();
+        } catch {}
+        _crimesPingMsgId = null;
+      }
+      const pingMsg = await ch.send({ content: `<@&${CRIME_ROLE}> 🚨 Crime opportunity is live!` });
+      _crimesPingMsgId = pingMsg.id;
+    }
+
+    // Delete ping when alert clears (so it doesn't linger after the window passes)
+    if (!hasAlert && _crimesPingMsgId) {
+      try {
+        const old = await ch.messages.fetch(_crimesPingMsgId);
+        await old.delete();
+      } catch {}
+      _crimesPingMsgId = null;
+    }
   } catch (e) { console.error('[CHANNELS] refreshCrimes:', e.message); }
 }
 
@@ -163,7 +183,7 @@ async function initChannels(client) {
   ]);
 
   setInterval(() => refreshLoot(client),     60000);
-  setInterval(() => refreshCalendar(client), 60000);
+  setInterval(() => refreshCalendar(client), 15 * 60000);
   setInterval(() => refreshCrimes(client),   5 * 60000);
 
   // Hospital status: re-fetch API every 5 mins, redraw embed every 60s

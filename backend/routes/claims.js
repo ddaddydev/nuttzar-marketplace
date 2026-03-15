@@ -2,7 +2,7 @@ const express      = require('express');
 const router       = express.Router();
 const internalAuth = require('../middleware/internalAuth');
 const {
-  claimUnits, completeClaim, getClaim,
+  claimUnits, completeClaim, completeClaimPartial, getClaim,
   getPendingPayouts, markPayoutSent, getContract,
 } = require('../services/contracts');
 const { verifyAttackLog, verifyEscapeLog } = require('../services/tornApi');
@@ -64,13 +64,70 @@ router.post('/:id/complete', internalAuth, async (req, res) => {
       verification = await verifyEscapeLog(apiKey, contract.buyer_torn_id, claim.quantity_claimed, claim.claimed_at);
     }
 
-    if (!verification.verified)
+    const { count, needed, wrongOutcomes = 0 } = verification;
+
+    // ── Wrong outcome — seller cheated (won when should lose / didn't escape) ──
+    if (wrongOutcomes > 0 && count === 0) {
+      if (global.discordBot) {
+        global.discordBot.emit('claim_alert', {
+          type:     'wrong_outcome',
+          claim,
+          contract,
+          message:  `⚠️ Seller **${claim.seller_torn_id}** completed a **${contract.type}** contract incorrectly. ` +
+                    `Found ${wrongOutcomes} attack(s) with the wrong result (e.g. won instead of lost).`,
+        });
+      }
       return res.status(400).json({
         success: false,
-        error: `Verification failed. Found ${verification.count}/${verification.needed} confirmed actions.`,
-        details: verification,
+        error: `Verification failed — ${wrongOutcomes} attack(s) found but with wrong outcome. ` +
+               `For a ${contract.type} contract you need to ${contract.type === 'escape' ? 'escape' : 'lose'} the fight.`,
       });
+    }
 
+    // ── Partial completion — credit what was verified, return rest to pool ────
+    if (count > 0 && count < needed) {
+      const result = completeClaimPartial(claimId, count);
+      if (global.discordBot) {
+        // Notify admin of partial — might indicate lazy seller
+        global.discordBot.emit('claim_alert', {
+          type:     'partial',
+          claim,
+          contract,
+          credited: result.credited,
+          returned: result.returned,
+          message:  `📦 Partial completion by **${claim.seller_torn_id}** — verified **${result.credited}/${needed}** units. ` +
+                    `**${result.returned}** units returned to pool. Payout: $${Number(result.payout_amount).toLocaleString()}.`,
+        });
+        global.discordBot.emit('payout_ready', {
+          claim: result.claim, contract: result.contract, seller_torn_id: claim.seller_torn_id,
+        });
+      }
+      return res.json({
+        success: true, partial: true,
+        credited: result.credited, returned: result.returned,
+        payout_amount: result.payout_amount, claim: result.claim,
+        message: `Partial: ${result.credited}/${needed} verified. ${result.returned} units returned to pool.`,
+      });
+    }
+
+    // ── Zero verified — complete failure ──────────────────────────────────────
+    if (count === 0) {
+      if (global.discordBot) {
+        global.discordBot.emit('claim_alert', {
+          type:     'failed',
+          claim,
+          contract,
+          message:  `❌ Seller **${claim.seller_torn_id}** claimed ${needed} ${contract.type}(s) but 0 were verified in their attack log.`,
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        error: `Verification failed. Found 0/${needed} confirmed actions in your attack log. ` +
+               `Make sure you attacked the correct target after claiming.`,
+      });
+    }
+
+    // ── Full completion ───────────────────────────────────────────────────────
     const result = completeClaim(claimId);
     if (global.discordBot) {
       global.discordBot.emit('payout_ready', {

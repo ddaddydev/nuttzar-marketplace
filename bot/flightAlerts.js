@@ -95,9 +95,20 @@ async function fetchScoredItems() {
     else if (item.qty === 0 && pred.restockEtaMs)  predicted.push({ ...base, qty: 0, inStock: false });
   }
 
+  // Only show predicted items where leaving NOW gets you there in time for the restock
+  // Use std class as baseline for the channel embed — use user's actual class for DM alerts
+  const now = Date.now();
+  const filtered = predicted.filter(item => {
+    const stdMs = (FLIGHT_MINS[item.country]?.std || 120) * 60000;
+    const toRestock = item.restockEtaMs - now;
+    // Show if restock happens within 0..2x flight time (leave now → arrive before or just after restock)
+    return toRestock >= 0 && toRestock <= stdMs * 2;
+  });
+
   inStock.sort((a, b)   => b.profitPerHr - a.profitPerHr);
+  filtered.sort((a, b)  => b.profitPerHr - a.profitPerHr);
   predicted.sort((a, b) => b.profitPerHr - a.profitPerHr);
-  return { inStock: inStock.slice(0, 5), predicted: predicted.slice(0, 5), updatedAt };
+  return { inStock: inStock.slice(0, 5), predicted: filtered.slice(0, 5), allPredicted: predicted.slice(0, 5), updatedAt };
 }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
@@ -120,11 +131,16 @@ function buildStockEmbed(inStock, predicted, updatedAt) {
     : '_No quality stock right now_';
 
   const predLines = predicted.length
-    ? predicted.map((item, i) =>
-        `**${i+1}.** ${CC_FLAGS[item.country]||'🌍'} **${item.name}** · restock ${fmtEta(item.restockEtaMs)}\n` +
-        `　+${fmt(item.margin)}/unit · **${fmt(item.profitPerHr)}/hr** · ${item.confidence.label}`
-      ).join('\n')
-    : '_No predicted restocks with data_';
+    ? predicted.map((item, i) => {
+        const flMs  = (FLIGHT_MINS[item.country]?.std || 120) * 60000;
+        const eta   = item.restockEtaMs - Date.now();
+        const inWin = eta >= 0 && eta <= flMs * 1.1;
+        const icon  = inWin ? '✈️' : '🔮';
+        const hint  = inWin ? ' **← leave now**' : '';
+        return `**${i+1}.** ${icon} ${CC_FLAGS[item.country]||'🌍'} **${item.name}** · restock ${fmtEta(item.restockEtaMs)}${hint}\n` +
+               `　+${fmt(item.margin)}/unit · **${fmt(item.profitPerHr)}/hr** · ${item.confidence.label}`;
+      }).join('\n')
+    : '_No predicted restocks matching current flight windows_';
 
   const age    = updatedAt ? Math.round((Date.now() - updatedAt) / 60000) : null;
   const ageStr = age == null ? '—' : age < 2 ? 'Fresh 🟢' : age < 10 ? `${age}m 🟡` : `${age}m 🔴`;

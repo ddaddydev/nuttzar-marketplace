@@ -1,248 +1,113 @@
+// backend/services/tornApi.js
 const axios = require('axios');
 
-const TORN_API_BASE = 'https://api.torn.com';
+const BASE          = 'https://api.torn.com';
 const ADMIN_TORN_ID = '4042794';
 
-// Verify a Torn API key and return user info
 async function verifyApiKey(apiKey) {
   try {
-    const res = await axios.get(`${TORN_API_BASE}/user/?selections=basic&comment=NSH&key=${apiKey}`, {
-      timeout: 8000
-    });
-
-    if (res.data.error) {
-      return { valid: false, error: res.data.error.error };
-    }
-
-    return {
-      valid: true,
-      torn_id: String(res.data.player_id),
-      torn_name: res.data.name,
-      level: res.data.level
-    };
-  } catch (err) {
-    return { valid: false, error: 'Failed to reach Torn API' };
-  }
+    const res = await axios.get(`${BASE}/user/?selections=basic&key=${apiKey}`, { timeout: 8000 });
+    if (res.data.error) return { valid: false, error: res.data.error.error };
+    return { valid: true, torn_id: String(res.data.player_id), torn_name: res.data.name, level: res.data.level };
+  } catch { return { valid: false, error: 'Failed to reach Torn API' }; }
 }
 
-// Get user's Discord link via Torn API
-async function getTornDiscordLink(tornId, apiKey) {
-  try {
-    const res = await axios.get(
-      `${TORN_API_BASE}/v2/user/${tornId}/discord?comment=NUTTSERVICE&key=${apiKey}`,
-      { timeout: 8000 }
-    );
-
-    if (res.data.error) return { linked: false, error: res.data.error.error };
-
-    return {
-      linked: true,
-      discord_id: res.data.discord?.discordID || null,
-      torn_id: String(tornId)
-    };
-  } catch (err) {
-    return { linked: false, error: 'Failed to reach Torn API' };
-  }
-}
-
-// Verify buyer sent exact payment amount to admin within last hour
-// Uses v2 /user/log with category for sent money, falls back to v1
 async function verifyPayment(buyerApiKey, expectedAmount) {
   try {
     const cutoff = Math.floor(Date.now() / 1000) - 3600;
 
-    // v2 log — category 100 = money/cash sent
-    const res = await axios.get(
-      `${TORN_API_BASE}/v2/user/log?cat=100&limit=200&comment=NSH&key=${buyerApiKey}`,
-      { timeout: 8000 }
-    );
-
-    if (!res.data.error) {
-      const logs = res.data.log || [];
-      const entries = Array.isArray(logs) ? logs : Object.values(logs);
-
-      for (const entry of entries) {
-        if (entry.timestamp < cutoff) continue;
-
-        const d = entry.data || entry.params || {};
-        const toId = String(d.to_id || d.recipient_id || d.target || '');
-        const amount = d.amount || d.money || d.value || 0;
-
-        if (toId === ADMIN_TORN_ID && amount === expectedAmount) {
-          return { verified: true };
+    // Try v2 log first (category 100 = money sent)
+    try {
+      const v2 = await axios.get(`${BASE}/v2/user/log?cat=100&limit=100&key=${buyerApiKey}`, { timeout: 8000 });
+      if (!v2.data.error) {
+        for (const entry of Object.values(v2.data.log || {})) {
+          const p = entry.params || {};
+          if (
+            entry.timestamp >= cutoff &&
+            String(p.to_id || p.recipient || '') === ADMIN_TORN_ID &&
+            (p.amount === expectedAmount || p.money === expectedAmount)
+          ) return { verified: true, entry };
         }
       }
+    } catch { /* fall through */ }
 
-      // No match found — give specific feedback
-      return {
-        verified: false,
-        error: `Payment of $${expectedAmount.toLocaleString()} to admin not found in last hour. Make sure your Torn API key has **Log** access at torn.com/preferences.php#tab=api`
-      };
+    // Fallback: v1 moneyTransfers
+    const v1 = await axios.get(`${BASE}/user/?selections=moneyTransfers&key=${buyerApiKey}`, { timeout: 8000 });
+    if (v1.data.error) return { verified: false, error: v1.data.error.error };
+
+    for (const t of Object.values(v1.data.money_transfers || {})) {
+      if (t.type === 'sent' && String(t.to_id) === ADMIN_TORN_ID && t.amount === expectedAmount && t.timestamp >= cutoff) {
+        return { verified: true, transfer: t };
+      }
     }
 
-    return {
-      verified: false,
-      error: `API error: ${res.data.error.error}. Your key may need Log access enabled.`
-    };
-  } catch (err) {
-    return { verified: false, error: 'Failed to reach Torn API' };
-  }
+    return { verified: false, error: 'Payment not found — send the exact amount within the last hour.' };
+  } catch { return { verified: false, error: 'Failed to reach Torn API' }; }
 }
 
-// Check seller's attack log for losses against a target (v2 attacksfull)
+// Results that mean the seller WON (bad for loss contracts)
+const WIN_RESULTS = new Set(['Attacked', 'Mugged', 'Hospitalized']);
+
 async function verifyAttackLog(sellerApiKey, targetTornId, requiredCount, afterTimestamp) {
   try {
-    const res = await axios.get(
-      `${TORN_API_BASE}/v2/user/attacksfull?limit=1000&sort=DESC&comment=NSH&key=${sellerApiKey}`,
-      { timeout: 8000 }
-    );
+    const res = await axios.get(`${BASE}/user/?selections=attacks&key=${sellerApiKey}`, { timeout: 8000 });
+    if (res.data.error) return { verified: false, count: 0, error: res.data.error.error };
 
-    if (res.data.error) {
-      return { verified: false, count: 0, error: res.data.error.error };
-    }
+    let count = 0;        // valid losses
+    let wrongOutcomes = 0; // seller won instead of losing
 
-    const attacks = res.data.attacks || [];
-    let count = 0;
-
-    for (const attack of attacks) {
-      if (
-        attack.started >= afterTimestamp &&
-        attack.defender?.id === parseInt(targetTornId) &&
-        (attack.result === 'Hospitalized' || attack.result === 'Mugged')
-      ) {
-        count++;
+    for (const a of Object.values(res.data.attacks || {})) {
+      if (String(a.defender_id) !== String(targetTornId)) continue;
+      if (a.timestamp_started < afterTimestamp) continue;
+      if (WIN_RESULTS.has(a.result)) {
+        wrongOutcomes++; // seller attacked and WON — not a valid loss
+      } else {
+        count++; // seller lost, stalemate, etc — valid
       }
-      // Stop scanning once we're past the claim window (attacks are DESC)
-      if (attack.started < afterTimestamp - 300) break;
     }
 
-    return { verified: count >= requiredCount, count, needed: requiredCount };
-  } catch (err) {
-    return { verified: false, count: 0, error: 'Failed to reach Torn API' };
-  }
+    return {
+      verified:      count >= requiredCount,
+      count,
+      needed:        requiredCount,
+      wrongOutcomes, // seller won when they should have lost
+    };
+  } catch { return { verified: false, count: 0, needed: requiredCount, wrongOutcomes: 0, error: 'Failed to reach Torn API' }; }
 }
 
-// Check seller's attack log for escapes (v2 attacksfull)
-// Escape = attacker.id is the buyer (they attacked seller) and result is 'Escape'
 async function verifyEscapeLog(sellerApiKey, buyerTornId, requiredCount, afterTimestamp) {
   try {
-    const res = await axios.get(
-      `${TORN_API_BASE}/v2/user/attacksfull?limit=1000&sort=DESC&comment=NSH&key=${sellerApiKey}`,
-      { timeout: 8000 }
-    );
+    const res = await axios.get(`${BASE}/user/?selections=attacks&key=${sellerApiKey}`, { timeout: 8000 });
+    if (res.data.error) return { verified: false, count: 0, error: res.data.error.error };
 
-    if (res.data.error) {
-      return { verified: false, count: 0, error: res.data.error.error };
-    }
+    let count = 0;         // valid escapes
+    let wrongOutcomes = 0; // buyer attacked but seller lost instead of escaping
 
-    const attacks = res.data.attacks || [];
-    let count = 0;
-
-    for (const attack of attacks) {
-      if (
-        attack.started >= afterTimestamp &&
-        attack.attacker?.id === parseInt(buyerTornId) &&
-        attack.result === 'Escape'
-      ) {
+    for (const a of Object.values(res.data.attacks || {})) {
+      if (String(a.attacker_id) !== String(buyerTornId)) continue;
+      if (a.timestamp_started < afterTimestamp) continue;
+      if (a.result === 'Escape') {
         count++;
+      } else {
+        wrongOutcomes++; // attack happened but seller didn't escape
       }
-      if (attack.started < afterTimestamp - 300) break;
-    }
-
-    return { verified: count >= requiredCount, count, needed: requiredCount };
-  } catch (err) {
-    return { verified: false, count: 0, error: 'Failed to reach Torn API' };
-  }
-}
-
-// Verify bounty contract: check target has NSH bounties, and seller hospitalized them via attack log
-// Uses SELLER's API key to check their attack log against the target
-async function verifyBountyNSH(sellerApiKey, targetTornId, requiredCount, afterTimestamp) {
-  try {
-    // Step 1: Check that the target actually has NSH bounties active (using seller's key)
-    const bountyRes = await axios.get(
-      `${TORN_API_BASE}/v2/user/${targetTornId}/bounties?comment=NUTTSERVICE&key=${sellerApiKey}`,
-      { timeout: 8000 }
-    );
-
-    if (bountyRes.data.error) {
-      return { verified: false, count: 0, error: `Bounty API error: ${bountyRes.data.error.error}` };
-    }
-
-    const bounties = bountyRes.data.bounties || [];
-    const nshBounties = bounties.filter(b =>
-      b.reason && b.reason.toUpperCase().includes('NSH')
-    );
-
-    if (nshBounties.length === 0) {
-      return {
-        verified: false,
-        count: 0,
-        needed: requiredCount,
-        error: `Target [${targetTornId}] has no active NSH bounties. Cannot verify.`
-      };
-    }
-
-    // Step 2: Verify seller actually hospitalized the target via attack log
-    const attackRes = await axios.get(
-      `${TORN_API_BASE}/v2/user/attacksfull?limit=1000&sort=DESC&comment=NSH&key=${sellerApiKey}`,
-      { timeout: 8000 }
-    );
-
-    if (attackRes.data.error) {
-      return { verified: false, count: 0, error: attackRes.data.error.error };
-    }
-
-    const attacks = res.data.attacks || [];
-    let count = 0;
-
-    for (const attack of attacks) {
-      if (
-        attack.started >= afterTimestamp &&
-        attack.defender?.id === parseInt(targetTornId) &&
-        (attack.result === 'Hospitalized' || attack.result === 'Mugged')
-      ) {
-        count++;
-      }
-      if (attack.started < afterTimestamp - 300) break;
     }
 
     return {
-      verified: count >= requiredCount,
+      verified:      count >= requiredCount,
       count,
-      needed: requiredCount,
-      nsh_bounties: nshBounties.length
+      needed:        requiredCount,
+      wrongOutcomes, // attacks where seller failed to escape
     };
-  } catch (err) {
-    return { verified: false, count: 0, error: 'Failed to reach Torn API' };
-  }
+  } catch { return { verified: false, count: 0, needed: requiredCount, wrongOutcomes: 0, error: 'Failed to reach Torn API' }; }
 }
 
-// Get basic user info (name, id) from torn id - uses admin key
 async function getUserInfo(tornId, adminApiKey) {
   try {
-    const res = await axios.get(
-      `${TORN_API_BASE}/user/${tornId}?selections=basic&key=${adminApiKey}`,
-      { timeout: 8000 }
-    );
-
+    const res = await axios.get(`${BASE}/user/${tornId}?selections=basic&key=${adminApiKey}`, { timeout: 8000 });
     if (res.data.error) return null;
-
-    return {
-      torn_id: String(res.data.player_id),
-      torn_name: res.data.name
-    };
-  } catch {
-    return null;
-  }
+    return { torn_id: String(res.data.player_id), torn_name: res.data.name };
+  } catch { return null; }
 }
 
-module.exports = {
-  verifyApiKey,
-  getTornDiscordLink,
-  verifyPayment,
-  verifyAttackLog,
-  verifyEscapeLog,
-  verifyBountyNSH,
-  getUserInfo
-};
+module.exports = { verifyApiKey, verifyPayment, verifyAttackLog, verifyEscapeLog, getUserInfo };

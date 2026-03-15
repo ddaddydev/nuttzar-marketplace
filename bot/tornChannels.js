@@ -110,54 +110,49 @@ async function buildLootEmbed() {
   };
 }
 
-// ── Recurring events ──────────────────────────────────────────────────────────
-// day: 0=Sun … 6=Sat (UTC)
+// ── Annual Torn events — fixed calendar dates, repeat yearly ─────────────────
+// month is 0-indexed (0=Jan). endDay is inclusive.
 const EVENTS = [
-  {
-    name: 'Double Nerve',
-    day: 5, hour: 0, emoji: '⚡',
-    desc: 'All nerve costs halved — best time to grind crimes, OCs, or burn nerve on anything pricey.',
-  },
-  {
-    name: 'Double Energy',
-    day: 6, hour: 0, emoji: '🔋',
-    desc: 'Energy gives double the XP and gym gains. Best day to train or chain.',
-  },
-  {
-    name: 'Blood on the Streets',
-    day: 1, hour: 0, emoji: '🩸',
-    desc: 'Mugging pays double. Good day to mug targets for easy cash.',
-  },
-  {
-    name: 'Points Sale',
-    day: 2, hour: 0, emoji: '💎',
-    desc: 'Torn points go on sale. Stock up on refills, stat enhancers, or resell for profit.',
-  },
-  {
-    name: 'Faction Bonus',
-    day: 4, hour: 0, emoji: '⚔️',
-    desc: 'Faction respect gains are boosted. Good day to chain or run OCs with your faction.',
-  },
-  {
-    name: 'Chain Bonus Weekend',
-    day: 5, hour: 0, emoji: '🔗',
-    desc: 'Chain bonuses are doubled Fri–Sun. Coordinate with your faction for big respect gains.',
-  },
+  { name: "St Patrick's Day",     emoji: '🍀', month: 2,  day: 17, desc: "Alcohol effects doubled & Green Stout spawns in the city." },
+  { name: '420 Day',              emoji: '🌿', month: 3,  day: 20, desc: "Cannabis effects tripled." },
+  { name: 'Museum Day',           emoji: '🏛️', month: 4,  day: 18, desc: "10% bonus to museum point rewards." },
+  { name: 'World Blood Donor Day',emoji: '🩸', month: 5,  day: 14, desc: "Life and cooldown penalties for drawing blood are halved." },
+  { name: 'World Population Day', emoji: '⚔️', month: 6,  day: 11, desc: "Level and weapon EXP gained while attacking is doubled." },
+  { name: 'World Tiger Day',      emoji: '🐅', month: 6,  day: 29, desc: "Hunting experience increased by x5." },
+  { name: 'International Beer Day',emoji: '🍺',month: 7,  day: 7,  desc: "Beer items are five times more effective." },
+  { name: 'Elimination',          emoji: '💀', month: 8,  day: 5,  endDay: 18, desc: "Team competition — 12 teams enter, one survives. Daily fights until a winner is crowned." },
+  { name: 'Tourism Day',          emoji: '✈️', month: 8,  day: 27, desc: "Travel capacity doubled for all flights during this event." },
+  { name: 'CaffeineCon',          emoji: '⚡', month: 9,  day: 15, desc: "Energy drink effects are doubled." },
+  { name: 'Trick or Treat',       emoji: '🎃', month: 9,  day: 25, endDay: 31, desc: "Dress up and attack others to fill your basket with treats." },
+  { name: 'Slash Wednesday',      emoji: '🔪', month: 11, day: 9,  desc: "Hospital times reduced by 75%." },
+  { name: 'Christmas Town',       emoji: '🎄', month: 11, day: 19, endDay: 31, desc: "Torn's festive theme park opens — search maps for treasure and avoid traps." },
 ];
 
-function nextOccurrence({ day, hour = 0, minute = 0 }) {
-  const now     = new Date();
-  const nowUTC  = now.getTime();
-  let daysUntil = (day - now.getUTCDay() + 7) % 7;
-  if (daysUntil === 0) {
-    const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, minute);
-    if (todayMs <= nowUTC) daysUntil = 7;
+// Returns the next occurrence of a fixed annual event (month/day, 0-indexed month)
+function nextAnnualOccurrence({ month, day }) {
+  const now  = new Date();
+  const year = now.getUTCFullYear();
+  // Try this year first
+  let candidate = Date.UTC(year, month, day, 0, 0, 0);
+  if (candidate <= Date.now()) {
+    // Already passed this year — use next year
+    candidate = Date.UTC(year + 1, month, day, 0, 0, 0);
   }
-  const base = new Date(nowUTC + daysUntil * 86400000);
-  return Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(), hour, minute);
+  return candidate;
 }
 
-// Returns "in X days Y hrs" or "in Xh Ym" or "in Xm" depending on how far away
+// Is an event currently active (multi-day)?
+function isActive({ month, day, endDay }) {
+  if (!endDay) return false;
+  const now   = new Date();
+  const year  = now.getUTCFullYear();
+  const start = Date.UTC(year, month, day);
+  const end   = Date.UTC(year, month, endDay, 23, 59, 59);
+  const nowMs = Date.now();
+  return nowMs >= start && nowMs <= end;
+}
+
+// Returns "in Xd Yh" / "in Xh Ym" / "in Xm" / "🔴 ACTIVE"
 function fmtTimeUntil(ms) {
   const secs = Math.max(0, Math.round((ms - Date.now()) / 1000));
   if (secs < 60)   return 'less than a minute';
@@ -174,7 +169,6 @@ function fmtTimeUntil(ms) {
 // ── Build calendar embed ──────────────────────────────────────────────────────
 function buildCalendarEmbed() {
   const now     = new Date();
-  // TCT clock — only show HH:MM, updates every 15 min so seconds aren't shown
   const tct     = `${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')} TCT`;
 
   const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
@@ -182,24 +176,46 @@ function buildCalendarEmbed() {
   const rH = Math.floor(toReset / 3600), rM = Math.floor((toReset % 3600) / 60);
   const resetStr = `${rH}h ${String(rM).padStart(2,'0')}m`;
 
-  const events = EVENTS.map(e => ({ ...e, nextMs: nextOccurrence(e) })).sort((a, b) => a.nextMs - b.nextMs);
-  const next   = events[0];
+  // Enrich events with next occurrence and active status
+  const enriched = EVENTS.map(e => ({
+    ...e,
+    active:  isActive(e),
+    nextMs:  isActive(e) ? Date.now() : nextAnnualOccurrence(e),
+  })).sort((a, b) => {
+    // Active events first, then soonest next
+    if (a.active && !b.active) return -1;
+    if (!a.active && b.active) return 1;
+    return a.nextMs - b.nextMs;
+  });
+
+  // Show next 6 upcoming (or active) events
+  const shown = enriched.slice(0, 6);
+  const next  = shown[0];
+
+  const nextLabel = next.active
+    ? `🔴 **${next.name}** is happening now!`
+    : `📍 Next up: ${next.emoji} **${next.name}** — ${fmtTimeUntil(next.nextMs)}`;
+
+  const eventLines = shown.map(e => {
+    const timing = e.active ? '🔴 **Active now**' : fmtTimeUntil(e.nextMs);
+    const dates  = e.endDay
+      ? `${e.day}/${e.month + 1} – ${e.endDay}/${e.month + 1}`
+      : `${e.day}/${e.month + 1}`;
+    return `${e.emoji} **${e.name}** _(${dates})_ — ${timing}\n　*${e.desc}*`;
+  }).join('\n\n');
 
   return {
     color: 0x3498DB,
     title: `🕐 ${tct}`,
     description:
       `🔄 Daily reset ${fmtTimeUntil(midnight)} · **${resetStr}** left\n` +
-      `📍 Next up: ${next.emoji} **${next.name}** — ${fmtTimeUntil(next.nextMs)}`,
+      nextLabel,
     fields: [{
-      name: '📅 Upcoming Events',
-      value: events.map(e =>
-        `${e.emoji} **${e.name}** — ${fmtTimeUntil(e.nextMs)}\n` +
-        `　*${e.desc}*`
-      ).join('\n\n'),
+      name: '📅 Upcoming Torn Events',
+      value: eventLines || '_No upcoming events found_',
       inline: false,
     }],
-    footer: { text: 'TCT = UTC · Recurring weekly events · Updates every 15 minutes' },
+    footer: { text: 'TCT = UTC · Annual Torn calendar events · Updates every 15 minutes' },
     timestamp: new Date().toISOString(),
   };
 }

@@ -218,6 +218,92 @@ const TARGETS = [
   { name:'penguinbob',       id:1636674, lvl:5,   total:2765275, semper:true },
 ];
 
+
+const axios = require('axios');
+
+const delay = ms => new Promise(r => setTimeout(r, ms));
+
+// ── Hospital check — called on demand by /checkhospital ───────────────────────
+async function checkHospitalStatus(apiKey) {
+  const results = { hosped: [], available: [], errors: 0 };
+  const now = Math.floor(Date.now() / 1000);
+  const ids = TARGETS.filter(t => !t.semper).map(t => t.id); // skip penguinbob etc
+
+  for (let i = 0; i < ids.length; i += 5) {
+    const batch = ids.slice(i, i + 5);
+    await Promise.all(batch.map(async id => {
+      try {
+        const res = await axios.get(
+          `https://api.torn.com/user/${id}?selections=basic&key=${apiKey}&comment=NuttHub`,
+          { timeout: 8000 }
+        );
+        if (res.data?.error) { results.errors++; return; }
+        const s = res.data?.status;
+        const target = TARGETS.find(t => t.id === id);
+        if (!s || !target) return;
+        if (s.state === 'Hospital' && s.until > now) {
+          results.hosped.push({ ...target, until: s.until });
+        } else {
+          results.available.push(target);
+        }
+      } catch { results.errors++; }
+    }));
+    if (i + 5 < ids.length) await delay(4000); // 5 req/4s ≈ 45 req/min
+  }
+
+  results.hosped.sort((a, b) => a.until - b.until);
+  return results;
+}
+
+function fmtCountdown(untilTs) {
+  const secs = Math.max(0, untilTs - Math.floor(Date.now() / 1000));
+  if (!secs) return 'Out now';
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`;
+  if (m > 0) return `${m}m ${String(s).padStart(2,'0')}s`;
+  return `${s}s`;
+}
+
+function buildHospitalEmbeds(results, checkedBy) {
+  const embeds = [];
+  const ts = `<t:${Math.floor(Date.now()/1000)}:R>`;
+
+  if (!results.hosped.length) {
+    embeds.push({
+      color: 0x2ECC71,
+      title: '🏥 Hospital Check — All Clear',
+      description: `No targets currently in hospital.
+
+Checked **${results.available.length}** targets${results.errors ? ` (${results.errors} errors)` : ''}.`,
+      footer: { text: `Checked by ${checkedBy}` },
+      timestamp: new Date().toISOString(),
+    });
+    return embeds;
+  }
+
+  // Chunk hosped targets into embeds
+  const lines = results.hosped.map(t =>
+    `[${t.name}](${atkUrl(t.id)}) Lvl${t.lvl} — out in **${fmtCountdown(t.until)}**`
+  );
+  const chunks = chunkLines(lines);
+
+  chunks.forEach((desc, i) => {
+    embeds.push({
+      color: 0xE74C3C,
+      title: i === 0
+        ? `🏥 Hospital Check — ${results.hosped.length} in hospital`
+        : `🏥 Hospital Check (cont. ${i+1}/${chunks.length})`,
+      description: desc,
+      ...(i === chunks.length - 1 ? {
+        footer: { text: `Checked by ${checkedBy} · ${results.available.length} available · ${results.errors ? results.errors + ' errors' : 'no errors'}` },
+        timestamp: new Date().toISOString(),
+      } : {}),
+    });
+  });
+
+  return embeds;
+}
+
 const atkUrl = id => `https://www.torn.com/loader.php?sid=attack&user2ID=${id}`;
 
 // Split lines into chunks that fit within Discord's 4096 char embed limit
@@ -290,4 +376,4 @@ function buildLevelListEmbeds() {
   return embeds;
 }
 
-module.exports = { LEVEL_LIST_CHANNEL_ID, TARGETS, buildLevelListEmbeds };
+module.exports = { LEVEL_LIST_CHANNEL_ID, TARGETS, buildLevelListEmbeds, checkHospitalStatus, buildHospitalEmbeds };

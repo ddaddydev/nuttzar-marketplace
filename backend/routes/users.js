@@ -121,4 +121,24 @@ router.get('/:torn_id/balance', internalAuth, (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
+
+// ── GET /api/users/by-discord/:discord_id/apikey ─────────────────────────────
+// Returns decrypted Torn API key for the user (bot uses for on-demand checks)
+// Protected: internal key required
+router.get('/by-discord/:discord_id/apikey', internalAuth, (req, res) => {
+  try {
+    if (!/^\d{17,20}$/.test(req.params.discord_id))
+      return res.status(400).json({ success: false, error: 'Invalid Discord ID' });
+
+    const user = getDb().prepare('SELECT encrypted_api_key FROM users WHERE discord_id = ?')
+      .get(req.params.discord_id);
+    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+    if (!user.encrypted_api_key) return res.status(404).json({ success: false, error: 'No API key stored' });
+
+    const { decrypt } = require('../services/encryption');
+    const apiKey = decrypt(user.encrypted_api_key);
+    res.json({ success: true, api_key: apiKey });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
 module.exports = router;

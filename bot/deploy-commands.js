@@ -22,6 +22,7 @@ const commands = [
   new SlashCommandBuilder().setName('admin-verify-claim').setDescription('[Admin] Force-approve a claim')
     .addIntegerOption(o => o.setName('claim_id').setDescription('Claim ID to approve').setRequired(true)),
   new SlashCommandBuilder().setName('testapi').setDescription('[Admin] Test Torn API connectivity'),
+  new SlashCommandBuilder().setName('checkhospital').setDescription('Check which Baldr targets are in hospital — posts results to the channel'),
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);

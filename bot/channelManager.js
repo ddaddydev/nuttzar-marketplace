@@ -14,7 +14,7 @@ const { LEVEL_LIST_CHANNEL_ID, buildLevelListEmbeds } = require('./tornLevelList
 let lootMsgId     = null;
 let crimesMsgId   = null;
 let calendarMsgId = null;
-let levelMsgIds   = []; // array — 3 embeds
+let levelMsgIds   = []; // array — dynamic embed count
 
 let _prevCrimesAlert = false;
 let _crimesPingMsgId = null; // track ping so we can delete it when alert clears
@@ -108,6 +108,16 @@ async function refreshCrimes(client) {
 }
 
 // ── Level List ────────────────────────────────────────────────────────────────
+async function deleteBotMessages(ch, client) {
+  try {
+    const fetched = await ch.messages.fetch({ limit: 100 });
+    const botMsgs = [...fetched.filter(m => m.author.id === client.user.id).values()];
+    for (const msg of botMsgs) {
+      await msg.delete().catch(() => {});
+    }
+  } catch {}
+}
+
 async function refreshLevelList(client) {
   try {
     const ch = await client.channels.fetch(LEVEL_LIST_CHANNEL_ID).catch(() => null);
@@ -115,7 +125,7 @@ async function refreshLevelList(client) {
 
     const embeds = buildLevelListEmbeds();
 
-    // Try to edit all 3 existing messages
+    // Try to edit existing messages if count matches
     if (levelMsgIds.length === embeds.length) {
       let ok = true;
       for (let i = 0; i < embeds.length; i++) {
@@ -127,18 +137,16 @@ async function refreshLevelList(client) {
       if (ok) return;
     }
 
-    // Post fresh
-    const fetched = await ch.messages.fetch({ limit: 100 });
-    const botMsgs = fetched.filter(m => m.author.id === client.user.id);
-    if (botMsgs.size > 1) await ch.bulkDelete(botMsgs).catch(() => {});
-    else if (botMsgs.size === 1) await botMsgs.first().delete().catch(() => {});
+    // Count mismatch or edit failed — delete all bot messages individually
+    // (bulkDelete fails on messages >14 days old, so we delete one by one)
+    await deleteBotMessages(ch, client);
 
     levelMsgIds = [];
     for (const embed of embeds) {
       const msg = await ch.send({ embeds: [embed] });
       levelMsgIds.push(msg.id);
     }
-    console.log('[CHANNELS] Level list posted');
+    console.log(`[CHANNELS] Level list posted (${embeds.length} embeds)`);
   } catch (e) { console.error('[CHANNELS] refreshLevelList:', e.message); }
 }
 

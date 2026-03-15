@@ -189,18 +189,14 @@ function buildCalendarEmbed() {
     color: 0x3498DB,
     title: `🕐 ${tct}`,
     description:
-      `🔄 Daily reset ${fmtTimeUntil(midnight)} · **${resetStr}** left
-` +
+      `🔄 Daily reset ${fmtTimeUntil(midnight)} · **${resetStr}** left\n` +
       `📍 Next up: ${next.emoji} **${next.name}** — ${fmtTimeUntil(next.nextMs)}`,
     fields: [{
       name: '📅 Upcoming Events',
       value: events.map(e =>
-        `${e.emoji} **${e.name}** — ${fmtTimeUntil(e.nextMs)}
-` +
+        `${e.emoji} **${e.name}** — ${fmtTimeUntil(e.nextMs)}\n` +
         `　*${e.desc}*`
-      ).join('
-
-'),
+      ).join('\n\n'),
       inline: false,
     }],
     footer: { text: 'TCT = UTC · Recurring weekly events · Updates every 15 minutes' },

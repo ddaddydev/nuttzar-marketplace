@@ -8,7 +8,7 @@ const {
   LOOT_FIGHTER_ROLE, CRIME_ROLE,
 } = require('./tornChannels');
 
-const { LEVEL_LIST_CHANNEL_ID, refreshStatusCache, buildLevelListEmbeds } = require('./tornLevelList');
+const { LEVEL_LIST_CHANNEL_ID, buildLevelListEmbeds } = require('./tornLevelList');
 
 // ── Tracked message IDs ───────────────────────────────────────────────────────
 let lootMsgId     = null;
@@ -172,9 +172,6 @@ async function handleChannelButton(interaction) {
 async function initChannels(client) {
   console.log('[CHANNELS] Initialising...');
 
-  const apiKey = process.env.ADMIN_API_KEY;
-  if (apiKey) await refreshStatusCache(apiKey).catch(e => console.warn('[CHANNELS] Status fetch:', e.message));
-
   await Promise.all([
     refreshLoot(client),
     refreshCalendar(client),
@@ -186,12 +183,7 @@ async function initChannels(client) {
   setInterval(() => refreshCalendar(client), 15 * 60000);
   setInterval(() => refreshCrimes(client),   5 * 60000);
 
-  // Hospital status: re-fetch API every 5 mins, redraw embed every 60s
-  setInterval(async () => {
-    if (apiKey) await refreshStatusCache(apiKey).catch(() => {});
-    await refreshLevelList(client);
-  }, 5 * 60000);
-  setInterval(() => refreshLevelList(client), 60000);
+  setInterval(() => refreshLevelList(client), 5 * 60000);
 
   console.log('[CHANNELS] All pollers started');
 }

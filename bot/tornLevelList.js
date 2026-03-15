@@ -1,8 +1,5 @@
 // bot/tornLevelList.js
-// Baldr levelling target list with live hospital status + countdown
-// Polls Torn API v2 every 5 mins using ADMIN_API_KEY
-
-const axios = require('axios');
+// Baldr levelling target list — static, no API calls needed
 
 const LEVEL_LIST_CHANNEL_ID = '1482548695584215181';
 
@@ -221,122 +218,66 @@ const TARGETS = [
   { name:'penguinbob',       id:1636674, lvl:5,   total:2765275, semper:true },
 ];
 
-// ── Hospital status cache ─────────────────────────────────────────────────────
-let _statusCache = new Map(); // id -> { state, until }
-let _lastFetch   = 0;
-
 const atkUrl = id => `https://www.torn.com/loader.php?sid=attack&user2ID=${id}`;
 
-function fmtCountdown(untilTs) {
-  const secs = Math.max(0, untilTs - Math.floor(Date.now() / 1000));
-  if (!secs) return 'Out now';
-  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
-  if (h > 0) return `${h}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`;
-  if (m > 0) return `${m}m ${String(s).padStart(2,'0')}s`;
-  return `${s}s`;
-}
-
-// ── Fetch hospital status for all targets (batched, rate-limited) ─────────────
-async function refreshStatusCache(apiKey) {
-  if (!apiKey) return;
-  const newMap = new Map();
-  const ids    = TARGETS.map(t => t.id);
-  const delay  = ms => new Promise(r => setTimeout(r, ms));
-
-  for (let i = 0; i < ids.length; i += 10) {
-    await Promise.all(ids.slice(i, i + 10).map(async id => {
-      try {
-        const res = await axios.get(
-          `https://api.torn.com/v2/user/${id}?selections=basic,publicstatus&key=${apiKey}&comment=NuttzarLvlList`,
-          { timeout: 8000 }
-        );
-        // v2 may return status under .status or .publicstatus for other players
-        const s = res.data?.status || res.data?.publicstatus;
-        if (s) {
-          const state = s.state || s.description || 'Okay';
-          const until = s.until || 0;
-          newMap.set(id, { state, until });
-          // Log first result to confirm field names are correct
-          if (newMap.size === 1) console.log('[LEVELLIST] Sample status:', JSON.stringify(s));
-        }
-      } catch {}
-    }));
-    if (i + 10 < ids.length) await delay(700); // ~10 req/700ms = ~85 req/min, safe
+// Split lines into chunks that fit within Discord's 4096 char embed limit
+function chunkLines(lines, maxChars = 3900) {
+  const chunks = [];
+  let current = '';
+  for (const line of lines) {
+    const add = current ? '\n' + line : line;
+    if (current && (current + add).length > maxChars) {
+      chunks.push(current);
+      current = line;
+    } else {
+      current += add;
+    }
   }
-
-  _statusCache = newMap;
-  _lastFetch   = Date.now();
-  console.log(`[LEVELLIST] Refreshed ${newMap.size} player statuses`);
+  if (current) chunks.push(current);
+  return chunks;
 }
 
 // ── Build level list embeds ───────────────────────────────────────────────────
 function buildLevelListEmbeds() {
-  const now     = Math.floor(Date.now() / 1000);
   const main    = TARGETS.filter(t => !t.domino && !t.semper);
   const dominos = TARGETS.filter(t => t.domino);
   const semper  = TARGETS.find(t => t.semper);
 
-  // Split main targets into available / hospitalised
-  const available = [], hosped = [];
-  for (const t of main) {
-    const s = _statusCache.get(t.id);
-    if (s && s.state?.toLowerCase() === 'hospital' && s.until > now) hosped.push({ ...t, until: s.until });
-    else available.push(t);
-  }
-  hosped.sort((a, b) => a.until - b.until);
-
-  // Group available by level
+  // Build all lines grouped by level (highest first)
   const byLvl = {};
-  for (const t of available) {
+  for (const t of main) {
     (byLvl[t.lvl] = byLvl[t.lvl] || []).push(t);
   }
-  let availLines = Object.keys(byLvl).sort((a, b) => b - a).map(lvl =>
-    `**Lvl ${lvl}**\n` + byLvl[lvl].map(t =>
-      `[${t.name}](${atkUrl(t.id)}) · \`${Number(t.total).toLocaleString()}\` total`
-    ).join('\n')
-  ).join('\n');
-  if (availLines.length > 3900) availLines = availLines.slice(0, 3900) + '\n…(truncated)';
-
-  const ageStr = _lastFetch ? `${Math.round((Date.now() - _lastFetch) / 60000)}m ago` : 'pending';
-
-  // Embed 1: Available targets
-  const embed1 = {
-    color: 0x2ECC71,
-    title: `⚔️ Baldr Target List — ${available.length} Available`,
-    description: availLines || '_All targets currently hospitalised_',
-    footer: { text: `Status: ${ageStr} · Credit: Baldr [1847600] · Click name to attack` },
-    timestamp: new Date().toISOString(),
-  };
-
-  // Embed 2: Hospitalised
-  let hospLines = hosped.map(t => {
-    const countdown = fmtCountdown(t.until);
-    return `[${t.name}](${atkUrl(t.id)}) Lvl${t.lvl} — out in **${countdown}**`;
-  }).join('\n');
-  if (hospLines.length > 3900) hospLines = hospLines.slice(0, 3900) + '\n…';
-
-  const embed2 = {
-    color: 0xE74C3C,
-    title: `🏥 In Hospital — ${hosped.length} targets`,
-    description: hospLines || '_No targets currently hospitalised_',
-    footer: { text: 'Updates every 5 minutes' },
-  };
-
-  // Embed 3: Special targets
-  const dominoLines = dominos.map(t => {
-    const s = _statusCache.get(t.id);
-    const hosp = s?.state === 'Hospital' && s.until > now ? ` 🏥 out in ${fmtCountdown(s.until)}` : '';
-    return `[${t.name}](${atkUrl(t.id)}) Lvl${t.lvl} · \`${Number(t.total).toLocaleString()}\`${hosp}`;
-  }).join('\n');
-
-  let semperLine = '_Unknown_';
-  if (semper) {
-    const s = _statusCache.get(semper.id);
-    const hosp = s?.state === 'Hospital' && s.until > now ? ` 🏥 out in ${fmtCountdown(s.until)}` : '';
-    semperLine = `[${semper.name}](${atkUrl(semper.id)}) Lvl${semper.lvl} · \`${Number(semper.total).toLocaleString()}\` total stats${hosp}`;
+  const allLines = [];
+  for (const lvl of Object.keys(byLvl).sort((a, b) => b - a)) {
+    allLines.push(`**Lvl ${lvl}**`);
+    for (const t of byLvl[lvl]) {
+      allLines.push(`[${t.name}](${atkUrl(t.id)}) · \`${Number(t.total).toLocaleString()}\` total`);
+    }
   }
 
-  const embed3 = {
+  // Chunk into embeds that fit Discord's limit
+  const chunks = chunkLines(allLines);
+  const embeds = chunks.map((desc, i) => ({
+    color: 0x2ECC71,
+    title: i === 0 ? `⚔️ Baldr Target List — ${main.length} targets` : `⚔️ Baldr Target List (cont. ${i + 1}/${chunks.length})`,
+    description: desc,
+    ...(i === chunks.length - 1 ? {
+      footer: { text: 'Credit: Baldr [1847600] · Click name to attack' },
+      timestamp: new Date().toISOString(),
+    } : {}),
+  }));
+
+  // Special targets embed
+  const dominoLines = dominos.map(t =>
+    `[${t.name}](${atkUrl(t.id)}) Lvl${t.lvl} · \`${Number(t.total).toLocaleString()}\``
+  ).join('\n');
+
+  const semperLine = semper
+    ? `[${semper.name}](${atkUrl(semper.id)}) Lvl${semper.lvl} · \`${Number(semper.total).toLocaleString()}\` total stats`
+    : '_Unknown_';
+
+  embeds.push({
     color: 0x9B59B6,
     title: '🎯 Special Targets',
     fields: [
@@ -344,9 +285,9 @@ function buildLevelListEmbeds() {
       { name: '💪 Semper Fortis / Manu Forti / Vae Victis — 3 awards + 3 merits for 1 fight', value: semperLine, inline: false },
     ],
     footer: { text: 'Semper Fortis: beat someone with more stats · Vae Victis: beat someone with 5x your stats' },
-  };
+  });
 
-  return [embed1, embed2, embed3];
+  return embeds;
 }
 
-module.exports = { LEVEL_LIST_CHANNEL_ID, TARGETS, refreshStatusCache, buildLevelListEmbeds };
+module.exports = { LEVEL_LIST_CHANNEL_ID, TARGETS, buildLevelListEmbeds };

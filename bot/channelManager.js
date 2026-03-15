@@ -1,0 +1,179 @@
+// bot/channelManager.js
+// Manages persistent embeds: Loot Timer, Crimes Intel, Calendar/TCT, Level List
+
+const {
+  buildLootEmbed, buildCalendarEmbed, buildCrimesEmbed, fetchCrimesData,
+  lootSignupRow, crimeSignupRow,
+  LOOT_CHANNEL_ID, CRIMES_CHANNEL_ID, CALENDAR_CHANNEL_ID,
+  LOOT_FIGHTER_ROLE, CRIME_ROLE,
+} = require('./tornChannels');
+
+const { LEVEL_LIST_CHANNEL_ID, refreshStatusCache, buildLevelListEmbeds } = require('./tornLevelList');
+
+// ── Tracked message IDs ───────────────────────────────────────────────────────
+let lootMsgId     = null;
+let crimesMsgId   = null;
+let calendarMsgId = null;
+let levelMsgIds   = []; // array — 3 embeds
+
+let _prevCrimesAlert = false;
+
+// ── Generic upsert — edit if we have message ID, otherwise post fresh ─────────
+async function upsertEmbed(client, channelId, getMsgId, setMsgId, embed, components) {
+  try {
+    const ch = await client.channels.fetch(channelId).catch(() => null);
+    if (!ch) return console.warn(`[CHANNELS] Channel ${channelId} not found`);
+
+    const payload = { embeds: [embed], components: components ? [components] : [] };
+    const existId = getMsgId();
+
+    if (existId) {
+      try {
+        const msg = await ch.messages.fetch(existId);
+        await msg.edit(payload);
+        return;
+      } catch { setMsgId(null); }
+    }
+
+    // Post fresh — purge old bot messages
+    const fetched = await ch.messages.fetch({ limit: 100 });
+    const botMsgs = fetched.filter(m => m.author.id === client.user.id);
+    if (botMsgs.size > 1) await ch.bulkDelete(botMsgs).catch(() => {});
+    else if (botMsgs.size === 1) await botMsgs.first().delete().catch(() => {});
+
+    const msg = await ch.send(payload);
+    setMsgId(msg.id);
+  } catch (e) { console.error(`[CHANNELS] upsertEmbed(${channelId}):`, e.message); }
+}
+
+// ── Loot ──────────────────────────────────────────────────────────────────────
+async function refreshLoot(client) {
+  await upsertEmbed(client, LOOT_CHANNEL_ID,
+    () => lootMsgId, id => { lootMsgId = id; },
+    await buildLootEmbed(), lootSignupRow()
+  );
+}
+
+// ── Calendar ──────────────────────────────────────────────────────────────────
+async function refreshCalendar(client) {
+  await upsertEmbed(client, CALENDAR_CHANNEL_ID,
+    () => calendarMsgId, id => { calendarMsgId = id; },
+    buildCalendarEmbed(), null
+  );
+}
+
+// ── Crimes ────────────────────────────────────────────────────────────────────
+async function refreshCrimes(client) {
+  try {
+    const apiKey = process.env.ADMIN_API_KEY;
+    if (!apiKey) return console.warn('[CRIMES] ADMIN_API_KEY not set');
+
+    const ch         = await client.channels.fetch(CRIMES_CHANNEL_ID).catch(() => null);
+    if (!ch) return;
+
+    const crimesData = await fetchCrimesData(apiKey);
+    const embed      = buildCrimesEmbed(crimesData);
+    const hasAlert   = embed.color === 0x2ECC71;
+    const isNewAlert = hasAlert && !_prevCrimesAlert;
+    _prevCrimesAlert = hasAlert;
+
+    await upsertEmbed(client, CRIMES_CHANNEL_ID,
+      () => crimesMsgId, id => { crimesMsgId = id; },
+      embed, crimeSignupRow()
+    );
+
+    // Only ping role on state transition (no alert → alert), not every refresh
+    if (isNewAlert) await ch.send({ content: `<@&${CRIME_ROLE}> 🚨 Crime opportunity is live!` });
+  } catch (e) { console.error('[CHANNELS] refreshCrimes:', e.message); }
+}
+
+// ── Level List ────────────────────────────────────────────────────────────────
+async function refreshLevelList(client) {
+  try {
+    const ch = await client.channels.fetch(LEVEL_LIST_CHANNEL_ID).catch(() => null);
+    if (!ch) return console.warn('[CHANNELS] Level list channel not found');
+
+    const embeds = buildLevelListEmbeds();
+
+    // Try to edit all 3 existing messages
+    if (levelMsgIds.length === embeds.length) {
+      let ok = true;
+      for (let i = 0; i < embeds.length; i++) {
+        try {
+          const msg = await ch.messages.fetch(levelMsgIds[i]);
+          await msg.edit({ embeds: [embeds[i]], components: [] });
+        } catch { ok = false; break; }
+      }
+      if (ok) return;
+    }
+
+    // Post fresh
+    const fetched = await ch.messages.fetch({ limit: 100 });
+    const botMsgs = fetched.filter(m => m.author.id === client.user.id);
+    if (botMsgs.size > 1) await ch.bulkDelete(botMsgs).catch(() => {});
+    else if (botMsgs.size === 1) await botMsgs.first().delete().catch(() => {});
+
+    levelMsgIds = [];
+    for (const embed of embeds) {
+      const msg = await ch.send({ embeds: [embed] });
+      levelMsgIds.push(msg.id);
+    }
+    console.log('[CHANNELS] Level list posted');
+  } catch (e) { console.error('[CHANNELS] refreshLevelList:', e.message); }
+}
+
+// ── Button handler ────────────────────────────────────────────────────────────
+async function handleChannelButton(interaction) {
+  const { customId: id } = interaction;
+
+  if (id === 'toggle_loot_fighter' || id === 'toggle_crime_role') {
+    const roleId = id === 'toggle_loot_fighter' ? LOOT_FIGHTER_ROLE : CRIME_ROLE;
+    const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+    if (!member) return interaction.reply({ content: '❌ Could not fetch your server profile.', ephemeral: true });
+    const role = interaction.guild.roles.cache.get(roleId);
+    if (!role)  return interaction.reply({ content: '❌ Role not found. Contact an admin.', ephemeral: true });
+
+    if (member.roles.cache.has(roleId)) {
+      await member.roles.remove(role);
+      const label = id === 'toggle_loot_fighter' ? 'Loot Fighter' : 'Crime';
+      return interaction.reply({ content: `🔕 ${label} alerts disabled.`, ephemeral: true });
+    }
+    await member.roles.add(role);
+    const msg = id === 'toggle_loot_fighter'
+      ? '⚔️ You\'re now a **Loot Fighter**! You\'ll be pinged for NPC loot opportunities.'
+      : '🔍 Crime alerts enabled! You\'ll be pinged when opportunities are live.';
+    return interaction.reply({ content: msg, ephemeral: true });
+  }
+
+  return false; // not handled here
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function initChannels(client) {
+  console.log('[CHANNELS] Initialising...');
+
+  const apiKey = process.env.ADMIN_API_KEY;
+  if (apiKey) await refreshStatusCache(apiKey).catch(e => console.warn('[CHANNELS] Status fetch:', e.message));
+
+  await Promise.all([
+    refreshLoot(client),
+    refreshCalendar(client),
+    refreshCrimes(client),
+    refreshLevelList(client),
+  ]);
+
+  setInterval(() => refreshLoot(client),     60000);
+  setInterval(() => refreshCalendar(client), 60000);
+  setInterval(() => refreshCrimes(client),   5 * 60000);
+
+  // Hospital status: re-fetch API every 5 mins, redraw embed every 60s
+  setInterval(async () => {
+    if (apiKey) await refreshStatusCache(apiKey).catch(() => {});
+    await refreshLevelList(client);
+  }, 5 * 60000);
+  setInterval(() => refreshLevelList(client), 60000);
+
+  console.log('[CHANNELS] All pollers started');
+}
+
+module.exports = { initChannels, handleChannelButton };

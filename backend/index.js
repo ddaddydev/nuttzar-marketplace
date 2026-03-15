@@ -1,29 +1,39 @@
 require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
+
+// ── Startup env check ─────────────────────────────────────────────────────────
+const REQUIRED_ENVS = ['INTERNAL_API_KEY', 'ENCRYPTION_KEY', 'ADMIN_API_KEY'];
+for (const key of REQUIRED_ENVS) {
+  if (!process.env[key]) {
+    console.error(`[STARTUP] ❌ Missing required env var: ${key}`);
+    process.exit(1);
+  }
+}
+
+const express  = require('express');
+const cors     = require('cors');
+const helmet   = require('helmet');
 const rateLimit = require('express-rate-limit');
-const cron = require('node-cron');
+const cron     = require('node-cron');
 
-const { getDb } = require('./db/schema');
-const contractRoutes = require('./routes/contracts');
-const claimRoutes = require('./routes/claims');
-const userRoutes = require('./routes/users');
-const { expirestaleClaims } = require('./services/contracts');
+const { getDb }               = require('./db/schema');
+const contractRoutes          = require('./routes/contracts');
+const claimRoutes             = require('./routes/claims');
+const userRoutes              = require('./routes/users');
+const flightPrefsRoutes       = require('./routes/flightPrefs');
+const { expirestaleClaims }   = require('./services/contracts');
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 3001;
 
-// ── IP Lockout tracker (in-memory) ────────────────────────────────────────────
-// Bans an IP for 1 hour after 5 consecutive failed attempts
+// ── IP lockout (in-memory) ────────────────────────────────────────────────────
+// Bans IP for 1 hour after 5 consecutive failures
 const failedAttempts = new Map();
 
 function trackFailure(ip) {
-  const now = Date.now();
   const entry = failedAttempts.get(ip) || { count: 0, bannedUntil: 0 };
-  entry.count += 1;
+  entry.count++;
   if (entry.count >= 5) {
-    entry.bannedUntil = now + 60 * 60 * 1000; // 1 hour ban
+    entry.bannedUntil = Date.now() + 3600000;
     entry.count = 0;
     console.warn(`[SECURITY] IP ${ip} banned for 1 hour`);
   }
@@ -39,136 +49,100 @@ function isIpBanned(ip) {
 }
 
 app.locals.trackFailure = trackFailure;
-app.locals.isIpBanned = isIpBanned;
+app.locals.isIpBanned   = isIpBanned;
 
 // ── IP ban check ──────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
-  const ip = req.ip || req.connection.remoteAddress;
-  if (isIpBanned(ip)) {
-    return res.status(429).json({
-      success: false,
-      error: 'Temporarily banned due to repeated failures. Try again in 1 hour.'
-    });
+  if (isIpBanned(req.ip)) {
+    return res.status(429).json({ success: false, error: 'Temporarily banned due to repeated failures. Try again in 1 hour.' });
   }
   next();
 });
 
 // ── Security headers ──────────────────────────────────────────────────────────
 app.use(helmet());
+
+// ── CORS ──────────────────────────────────────────────────────────────────────
 const allowedOrigins = [
   'https://marketplace.nuttzar.website',
   process.env.FRONTEND_URL,
-  process.env.NETLIFY_URL
+  process.env.NETLIFY_URL,
 ].filter(Boolean);
 
 app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl, Postman)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.some(o => origin.startsWith(o))) return callback(null, true);
-    // Allow any netlify.app preview URL for the site
-    if (origin.match(/https:\/\/[a-z0-9-]+\.netlify\.app$/)) return callback(null, true);
-    callback(new Error(`CORS blocked: ${origin}`));
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // allow server-to-server / curl
+    if (allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
+    if (/^https:\/\/[a-z0-9-]+\.netlify\.app$/.test(origin)) return cb(null, true);
+    cb(new Error(`CORS blocked: ${origin}`));
   },
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-internal-key']
+  methods: ['GET', 'POST', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-internal-key'],
 }));
 
-// Limit body size to 10kb — prevents memory exhaustion attacks
+// ── Body parser — 10kb limit prevents memory exhaustion ───────────────────────
 app.use(express.json({ limit: '10kb' }));
 
+// ── Redact API keys from logs — never let them appear in plaintext ────────────
+app.use((req, _res, next) => {
+  if (req.body?.api_key)        req.body.api_key        = '[REDACTED]';
+  if (req.body?.buyer_api_key)  req.body.buyer_api_key  = '[REDACTED]';
+  if (req.body?.internal_key)   req.body.internal_key   = '[REDACTED]';
+  next();
+});
+
 // ── Rate limiters ─────────────────────────────────────────────────────────────
-
-// General: 60 requests per 15 min per IP
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 60,
-  standardHeaders: true,
-  legacyHeaders: false,
+const mkLimiter = (windowMs, max, msg) => rateLimit({
+  windowMs, max,
+  standardHeaders: true, legacyHeaders: false,
   handler: (req, res) => {
     trackFailure(req.ip);
-    res.status(429).json({ success: false, error: 'Too many requests. Slow down.' });
-  }
+    res.status(429).json({ success: false, error: msg });
+  },
 });
-app.use('/api/', limiter);
 
-// Checkout: max 5 per hour per IP
-const checkoutLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 5,
-  handler: (req, res) => {
-    trackFailure(req.ip);
-    res.status(429).json({ success: false, error: 'Too many checkout attempts. Try again in 1 hour.' });
-  }
-});
-app.use('/api/contracts/checkout', checkoutLimiter);
+app.use('/api/',                    mkLimiter(15 * 60000, 60,  'Too many requests. Slow down.'));
+app.use('/api/contracts/checkout',  mkLimiter(60 * 60000, 5,   'Too many checkout attempts. Try again in 1 hour.'));
+app.use('/api/users/verify',        mkLimiter(60 * 60000, 10,  'Too many verify attempts. Try again in 1 hour.'));
+app.use('/api/contracts',           mkLimiter(60 * 60000, 10,  'Too many payment check attempts.'));
 
-// Verify: max 10 per hour per IP
-const verifyLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 10,
-  handler: (req, res) => {
-    trackFailure(req.ip);
-    res.status(429).json({ success: false, error: 'Too many verify attempts. Try again in 1 hour.' });
-  }
-});
-app.use('/api/users/verify', verifyLimiter);
-
-// Payment check: max 10 per hour per IP
-const paymentLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 10,
-  handler: (req, res) => {
-    trackFailure(req.ip);
-    res.status(429).json({ success: false, error: 'Too many payment check attempts.' });
-  }
-});
-app.use('/api/contracts', paymentLimiter);
-
-// Clean up expired bans every hour
+// ── Clean up expired bans hourly ──────────────────────────────────────────────
 setInterval(() => {
   const now = Date.now();
-  for (const [ip, entry] of failedAttempts.entries()) {
-    if (entry.bannedUntil && entry.bannedUntil <= now) failedAttempts.delete(ip);
+  for (const [ip, e] of failedAttempts.entries()) {
+    if (e.bannedUntil && e.bannedUntil <= now) failedAttempts.delete(ip);
   }
-}, 60 * 60 * 1000);
+}, 3600000);
 
-// ── Initialize DB ─────────────────────────────────────────────────────────────
+// ── Init DB ───────────────────────────────────────────────────────────────────
 getDb();
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-app.use('/api/contracts', contractRoutes);
-app.use('/api/claims', claimRoutes);
-app.use('/api/users', userRoutes);
+app.use('/api/contracts',    contractRoutes);
+app.use('/api/claims',       claimRoutes);
+app.use('/api/users',        userRoutes);
+app.use('/api/flight-prefs', flightPrefsRoutes);
 
-// Health check (no rate limit — Railway needs this to monitor the service)
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+// Health check — no rate limit, Railway needs this
+app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
-// ── Cron Jobs ─────────────────────────────────────────────────────────────────
-
-// Expire stale claims every 2 minutes
+// ── Cron: expire stale claims every 2 minutes ─────────────────────────────────
 cron.schedule('*/2 * * * *', () => {
   try {
     const expired = expirestaleClaims();
-    if (expired.length > 0) {
+    if (expired.length) {
       console.log(`[CRON] Expired ${expired.length} stale claim(s)`);
       if (global.discordBot) {
-        for (const claim of expired) {
-          global.discordBot.emit('claim_expired', claim);
-        }
+        for (const claim of expired) global.discordBot.emit('claim_expired', claim);
       }
     }
-  } catch (err) {
-    console.error('[CRON] Error expiring claims:', err.message);
-  }
+  } catch (e) { console.error('[CRON] expire claims:', e.message); }
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`[SERVER] Nuttzar Marketplace backend running on port ${PORT}`);
-  console.log(`[SERVER] Frontend allowed from: ${process.env.FRONTEND_URL}`);
+  console.log(`[SERVER] Nuttzar backend running on port ${PORT}`);
+  console.log(`[SERVER] Allowed origins: ${allowedOrigins.join(', ')}`);
 });
 
 module.exports = app;

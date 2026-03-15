@@ -1,243 +1,155 @@
+// bot/embeds.js
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
-const TYPE_COLORS = {
-  loss: 0xe74c3c,
-  bounty: 0xf39c12,
-  escape: 0x9b59b6
-};
-
-const TYPE_EMOJI = {
-  loss: '⚔️',
-  bounty: '💀',
-  escape: '🏃'
-};
+const TYPE_COLORS = { loss: 0xE74C3C, bounty: 0xF39C12, escape: 0x9B59B6 };
+const TYPE_EMOJI  = { loss: '⚔️', bounty: '💀', escape: '🏃' };
 
 function formatMoney(amount) {
   return `$${Number(amount).toLocaleString()}`;
 }
 
-function getAttackLink(targetTornId) {
-  return `https://www.torn.com/loader.php?sid=attack&user2ID=${targetTornId}`;
+function typeLabel(type) {
+  return type.charAt(0).toUpperCase() + type.slice(1);
 }
 
-function getBountyLink(targetTornId) {
-  return `https://www.torn.com/bounties.php?p=add&XID=${targetTornId}`;
-}
-
-function buildNoContractsEmbed(type) {
-  const emoji = TYPE_EMOJI[type];
-  const typeLabel = type.charAt(0).toUpperCase() + type.slice(1);
-
-  return new EmbedBuilder()
-    .setColor(0x2c2f33)
-    .setTitle(`${emoji}  ${typeLabel.toUpperCase()} CONTRACTS`)
-    .setDescription(
-      `> *The battlefield is quiet...*\n\n` +
-      `No active **${typeLabel}** contracts right now.\n` +
-      `Check back soon or visit the marketplace to post one.`
-    )
-    .setFooter({ text: 'Nuttzar Marketplace • marketplace.nuttzar.website' })
-    .setTimestamp();
-}
-
+// ── Contract embed (shown in channel) ────────────────────────────────────────
 function buildContractEmbed(contract) {
   const emoji = TYPE_EMOJI[contract.type];
-  const color = TYPE_COLORS[contract.type];
-  const typeLabel = contract.type.charAt(0).toUpperCase() + contract.type.slice(1);
-  const attackLink = getAttackLink(contract.target_torn_id);
-  const bountyLink = getBountyLink(contract.target_torn_id);
-  const actionLink = contract.type === 'bounty' ? bountyLink : attackLink;
-  const actionLabel = contract.type === 'bounty' ? '💀 Add Bounty Here' : '⚔️ Attack Here';
-
-  const total = contract.quantity;
-  const remaining = contract.quantity_remaining;
+  const total     = contract.quantity;
   const completed = contract.quantity_completed;
+  const remaining = contract.quantity_remaining;
+  const claimed   = total - remaining - completed;
+
+  const len  = 20;
+  const cBars = Math.round((completed / total) * len);
+  const xBars = Math.round((claimed   / total) * len);
+  const oBars = len - cBars - xBars;
+  const bar   = '█'.repeat(cBars) + '▒'.repeat(xBars) + '░'.repeat(oBars);
 
   const embed = new EmbedBuilder()
-    .setColor(color)
-    .setTitle(`${emoji}  CONTRACT #${contract.id} — ${typeLabel.toUpperCase()}`)
+    .setColor(TYPE_COLORS[contract.type])
+    .setTitle(`${emoji}  CONTRACT #${contract.id} — ${typeLabel(contract.type).toUpperCase()}`)
     .setTimestamp(new Date(contract.created_at * 1000))
-    .setFooter({ text: 'Nuttzar Marketplace • marketplace.nuttzar.website' });
+    .setFooter({ text: 'Nuttzar Marketplace · marketplace.nuttzar.website' });
 
   if (contract.target_torn_name && contract.target_torn_id) {
-    embed.addFields({
-      name: 'Target',
-      value: `${contract.target_torn_name} [${contract.target_torn_id}]\n[${actionLabel}](${actionLink})`,
-      inline: true
-    });
+    embed.addFields({ name: 'Target', value: `${contract.target_torn_name} [${contract.target_torn_id}]`, inline: true });
   }
 
   embed.addFields({
-    name: contract.type === 'loss' ? 'Per Loss' :
-          contract.type === 'escape' ? 'Per Escape' : 'Per Bounty Slot',
-    value: formatMoney(contract.price_per_unit),
-    inline: true
+    name:  contract.type === 'loss' ? 'Per Loss' : contract.type === 'escape' ? 'Per Escape' : 'Per Bounty Slot',
+    value: formatMoney(contract.price_per_unit), inline: true,
   });
 
   if (contract.type === 'bounty' && contract.bounty_amount > 0) {
-    embed.addFields({
-      name: 'Bounty Amount',
-      value: formatMoney(contract.bounty_amount),
-      inline: true
-    });
+    embed.addFields({ name: 'Bounty Amount', value: formatMoney(contract.bounty_amount), inline: true });
   }
 
   embed.addFields(
-    {
-      name: 'Units',
-      value: `✅ ${completed} done  •  🟢 ${remaining} open  •  📦 ${total} total`,
-      inline: false
-    },
-    {
-      name: 'Status',
-      value: remaining > 0 ? '🟢 **Open — accepting claims**' : '🔴 **Fully claimed**',
-      inline: false
-    }
+    { name: 'Progress', value: `\`${bar}\`\n✅ ${completed} done  •  🔒 ${claimed} claimed  •  🟢 ${remaining} open`, inline: false },
+    { name: 'Status',   value: remaining > 0 ? '🟢 **Open — accepting claims**' : '🔴 **Fully claimed**', inline: false },
   );
 
   return embed;
 }
 
+// ── Contract claim button ─────────────────────────────────────────────────────
 function buildContractButtons(contract) {
-  const canClaim = contract.quantity_remaining > 0 && contract.status === 'active';
-
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`claim_${contract.id}`)
-      .setLabel('🎯  Claim Units')
-      .setStyle(ButtonStyle.Primary)
-      .setDisabled(!canClaim)
+      .setCustomId(`claim_${contract.id}`).setLabel('🎯  Claim Units')
+      .setStyle(ButtonStyle.Primary).setDisabled(contract.quantity_remaining <= 0 || contract.status !== 'active')
   );
 }
 
+// ── Claim DM embed ────────────────────────────────────────────────────────────
 function buildClaimDmEmbed(claim, contract) {
-  const emoji = TYPE_EMOJI[contract.type];
-  const typeLabel = contract.type.charAt(0).toUpperCase() + contract.type.slice(1);
-  const attackLink = getAttackLink(contract.target_torn_id);
-  const bountyLink = getBountyLink(contract.target_torn_id);
-  const actionLink = contract.type === 'bounty' ? bountyLink : attackLink;
-  const actionLabel = contract.type === 'bounty' ? '💀 Add Bounty Here' : '⚔️ Attack Here';
+  const instructions = {
+    loss:   `Attack **${contract.target_torn_name} [${contract.target_torn_id}]** and **lose** the fight ${claim.quantity_claimed} time(s). Make sure attacks appear in your log.`,
+    escape: `The buyer will attack you. You must **escape** ${claim.quantity_claimed} time(s). Requires your DEX to exceed buyer's SPD.`,
+    bounty: `Place a bounty on **${contract.target_torn_name} [${contract.target_torn_id}]** and fulfill ${claim.quantity_claimed} slot(s).`,
+  };
 
-  const embed = new EmbedBuilder()
-    .setColor(0x2ecc71)
-    .setTitle(`${emoji}  Claim Confirmed — ${typeLabel} Contract #${contract.id}`)
-    .setDescription('You have **30 minutes** to complete your claim. Once done, click the button below.')
+  return new EmbedBuilder()
+    .setColor(0x2ECC71)
+    .setTitle(`${TYPE_EMOJI[contract.type]}  Claim Confirmed — ${typeLabel(contract.type)} Contract #${contract.id}`)
+    .setDescription('You have **30 minutes** to complete your claim. Click the button below once done.')
     .addFields(
-      {
-        name: 'Target',
-        value: `${contract.target_torn_name} [${contract.target_torn_id}]\n[${actionLabel}](${actionLink})`,
-        inline: true
-      },
-      { name: 'Units Claimed', value: `${claim.quantity_claimed}`, inline: true },
-      { name: 'Your Payout', value: formatMoney(claim.payout_amount), inline: true },
-      { name: '⏱️ Expires', value: `<t:${claim.expires_at}:R>`, inline: false }
-    );
-
-  if (contract.type === 'loss') {
-    embed.addFields({
-      name: '📋 Instructions',
-      value: `Attack **${contract.target_torn_name} [${contract.target_torn_id}]** and **lose** ${claim.quantity_claimed} time(s).\n[⚔️ Click here to attack](${attackLink})\nMake sure the attack shows in your attack log.`,
-      inline: false
-    });
-  } else if (contract.type === 'escape') {
-    embed.addFields({
-      name: '📋 Instructions',
-      value: `The buyer will attack you. **Escape** ${claim.quantity_claimed} time(s).\nRequires your DEX to exceed the buyer's SPD.`,
-      inline: false
-    });
-  } else if (contract.type === 'bounty') {
-    embed.addFields({
-      name: '📋 Instructions',
-      value: `Place a bounty on **${contract.target_torn_name} [${contract.target_torn_id}]** and fulfill ${claim.quantity_claimed} slot(s).\n[💀 Add Bounty Here](${bountyLink})\n⚠️ NSH bounties are flagged automatically.`,
-      inline: false
-    });
-  }
-
-  embed.setFooter({ text: `Claim ID: ${claim.id} • Nuttzar Marketplace` });
-  return embed;
+      { name: 'Target',              value: `${contract.target_torn_name} [${contract.target_torn_id}]`, inline: true },
+      { name: 'Units Claimed',       value: `${claim.quantity_claimed}`,                                 inline: true },
+      { name: 'Your Payout',         value: formatMoney(claim.payout_amount),                            inline: true },
+      { name: '⏱️ Expires',          value: `<t:${claim.expires_at}:R>`,                                 inline: false },
+      { name: '📋 Instructions',     value: instructions[contract.type] || '',                            inline: false },
+    )
+    .setFooter({ text: `Claim ID: ${claim.id} · Nuttzar Marketplace` });
 }
 
+// ── Complete button ───────────────────────────────────────────────────────────
 function buildCompleteButton(claimId) {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`complete_${claimId}`)
-      .setLabel('✅  Click when completed')
-      .setStyle(ButtonStyle.Success)
+    new ButtonBuilder().setCustomId(`complete_${claimId}`).setLabel('✅  Click when completed').setStyle(ButtonStyle.Success)
   );
 }
 
-function buildPayoutEmbed(claim, contract, sellerName, payoutId) {
+// ── Payout embed (admin channel) ──────────────────────────────────────────────
+function buildPayoutEmbed(claim, contract, sellerTornId, payoutId) {
   return new EmbedBuilder()
-    .setColor(0xf1c40f)
+    .setColor(0xF1C40F)
     .setTitle(`💰  PAYOUT REQUIRED — Contract #${contract.id}`)
     .addFields(
-      { name: '🆔 Payout ID', value: `**#${payoutId}** ← use this with \`/markpaid\``, inline: false },
-      { name: 'Seller', value: `${sellerName} [${claim.seller_torn_id}]`, inline: true },
-      { name: 'Amount to Send', value: `**${formatMoney(claim.payout_amount)}**`, inline: true },
-      { name: 'Contract Type', value: contract.type.charAt(0).toUpperCase() + contract.type.slice(1), inline: true },
-      { name: 'Units Completed', value: `${claim.quantity_claimed}`, inline: true },
-      { name: 'Claim ID', value: `#${claim.id}`, inline: true },
-      { name: 'Target', value: `${contract.target_torn_name} [${contract.target_torn_id}]`, inline: true }
+      { name: 'Seller',          value: `${sellerTornId} [${claim.seller_torn_id || sellerTornId}]`, inline: true },
+      { name: 'Amount to Send',  value: `**${formatMoney(claim.payout_amount)}**`,                   inline: true },
+      { name: 'Contract Type',   value: typeLabel(contract.type),                                    inline: true },
+      { name: 'Units Completed', value: `${claim.quantity_claimed}`,                                 inline: true },
+      { name: 'Payout ID',       value: `#${payoutId || '?'}`,                                       inline: true },
+      { name: 'Target',          value: `${contract.target_torn_name} [${contract.target_torn_id}]`, inline: true },
     )
     .setTimestamp()
-    .setFooter({ text: `Use /markpaid ${payoutId} once sent` });
+    .setFooter({ text: 'Use /markpaid <payout_id> once sent' });
 }
 
-function buildBalanceEmbed(tornName, tornId, balance) {
+// ── Balance embed ─────────────────────────────────────────────────────────────
+function buildBalanceEmbed(tornName, tornId, data) {
   return new EmbedBuilder()
-    .setColor(0x2ecc71)
-    .setTitle(`💰  Balance — ${tornName} [${tornId}]`)
+    .setColor(0x2ECC71)
+    .setTitle(`💰 Balance — ${tornName} [${tornId}]`)
     .addFields(
-      {
-        name: '⏳ Pending Payout',
-        value: `**${formatMoney(balance.pending_payout)}**\n*Earned but not yet sent*`,
-        inline: true
-      },
-      {
-        name: '✅ Total Paid Out',
-        value: `**${formatMoney(balance.lifetime_earned)}**\n*Already received*`,
-        inline: true
-      },
-      {
-        name: '📊 Net Earnings',
-        value: `**${formatMoney(balance.total_net)}**\n*Lifetime total*`,
-        inline: false
-      },
-      {
-        name: '🎯 Completed Claims',
-        value: `${balance.completed_claims}`,
-        inline: true
-      }
+      { name: '⏳ Pending Payout',   value: formatMoney(data.pending_payout  || 0), inline: true },
+      { name: '✅ Total Earned',      value: formatMoney(data.total_earned    || 0), inline: true },
+      { name: '📋 Completed Claims', value: `${data.completed_claims || 0}`,         inline: true },
     )
-    .setFooter({ text: 'Nuttzar Marketplace • marketplace.nuttzar.website' })
+    .setFooter({ text: 'Nuttzar Marketplace' })
     .setTimestamp();
 }
 
+// ── No contracts placeholder ──────────────────────────────────────────────────
+function buildNoContractsEmbed(type) {
+  const emoji = TYPE_EMOJI[type] || '📋';
+  return new EmbedBuilder()
+    .setColor(0x95A5A6)
+    .setTitle(`${emoji} No Active ${typeLabel(type)} Contracts`)
+    .setDescription('There are no active contracts of this type right now.\n\nCheck back soon or visit **marketplace.nuttzar.website** to place an order.')
+    .setFooter({ text: 'Nuttzar Marketplace' })
+    .setTimestamp();
+}
+
+// ── Verify success / fail ─────────────────────────────────────────────────────
 function buildVerifySuccessEmbed(tornName, tornId) {
   return new EmbedBuilder()
-    .setColor(0x2ecc71)
-    .setTitle('✅  Verification Successful')
+    .setColor(0x2ECC71).setTitle('✅  Verification Successful')
     .setDescription(`You are now verified as **${tornName} [${tornId}]**.\n\nYou can now claim contracts in the marketplace channels.`)
     .setFooter({ text: 'Nuttzar Marketplace' });
 }
 
 function buildVerifyFailEmbed(reason) {
   return new EmbedBuilder()
-    .setColor(0xe74c3c)
-    .setTitle('❌  Verification Failed')
+    .setColor(0xE74C3C).setTitle('❌  Verification Failed')
     .setDescription(`Could not verify your Torn API key.\n\n**Reason:** ${reason}\n\nMake sure your API key has **basic access** enabled.`)
     .setFooter({ text: 'Nuttzar Marketplace' });
 }
 
 module.exports = {
-  buildContractEmbed,
-  buildContractButtons,
-  buildClaimDmEmbed,
-  buildCompleteButton,
-  buildPayoutEmbed,
-  buildBalanceEmbed,
-  buildVerifySuccessEmbed,
-  buildVerifyFailEmbed,
-  buildNoContractsEmbed,
-  formatMoney
+  buildContractEmbed, buildContractButtons, buildClaimDmEmbed, buildCompleteButton,
+  buildPayoutEmbed, buildBalanceEmbed, buildNoContractsEmbed,
+  buildVerifySuccessEmbed, buildVerifyFailEmbed, formatMoney,
 };

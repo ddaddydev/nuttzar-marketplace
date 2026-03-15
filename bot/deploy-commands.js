@@ -1,80 +1,37 @@
-require('dotenv').config({ path: '../backend/.env' });
-const { REST, Routes, ApplicationCommandOptionType } = require('discord.js');
+require('dotenv').config();
+const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 
 const commands = [
-  {
-    name: 'verify',
-    description: 'Verify your Torn identity to become a seller',
-  },
-  {
-    name: 'myclaims',
-    description: 'View your current active claims (only visible to you)',
-  },
-  {
-    name: 'bal',
-    description: 'View your pending payout and net lifetime earnings (only visible to you)',
-  },
-  {
-    name: 'contracts',
-    description: 'View all active contracts (only visible to you)',
-    options: [
-      {
-        name: 'type',
-        description: 'Filter by contract type',
-        type: ApplicationCommandOptionType.String,
-        required: false,
-        choices: [
-          { name: 'Loss', value: 'loss' },
-          { name: 'Bounty', value: 'bounty' },
-          { name: 'Escape', value: 'escape' }
-        ]
-      }
-    ]
-  },
-  {
-    name: 'markpaid',
-    description: '[ADMIN] Mark a payout as sent',
-    options: [
-      {
-        name: 'payout_id',
-        description: 'The payout ID to mark as sent',
-        type: ApplicationCommandOptionType.Integer,
-        required: true
-      }
-    ]
-  },
-  {
-    name: 'testapi',
-    description: '[ADMIN] Test Torn API — pulls your recent attacks and bounty logs',
-  },
-  {
-    name: 'cancelclaim',
-    description: 'Cancel one of your active claims (releases units back)',
-    options: [
-      {
-        name: 'claim_id',
-        description: 'The claim ID to cancel',
-        type: ApplicationCommandOptionType.Integer,
-        required: true
-      }
-    ]
-  }
-];
+  new SlashCommandBuilder().setName('verify').setDescription('Link your Torn account to get access'),
+  new SlashCommandBuilder().setName('flightsetup').setDescription('Set your travel class and carry capacity'),
+  new SlashCommandBuilder().setName('flight-alerts').setDescription('Subscribe to flight alerts for specific items'),
+  new SlashCommandBuilder().setName('myclaims').setDescription('View your active claims'),
+  new SlashCommandBuilder().setName('contracts').setDescription('View active contracts')
+    .addStringOption(o => o.setName('type').setDescription('Filter by type').setRequired(false)
+      .addChoices(
+        { name: 'Loss',   value: 'loss'   },
+        { name: 'Bounty', value: 'bounty' },
+        { name: 'Escape', value: 'escape' },
+      )),
+  new SlashCommandBuilder().setName('bal').setDescription('Check your Nuttzar earnings and pending payouts'),
+  new SlashCommandBuilder().setName('cancelclaim').setDescription('Request cancellation of a claim')
+    .addIntegerOption(o => o.setName('claim_id').setDescription('Claim ID').setRequired(true)),
+  new SlashCommandBuilder().setName('markpaid').setDescription('[Admin] Mark a payout as sent')
+    .addIntegerOption(o => o.setName('payout_id').setDescription('Payout ID').setRequired(true)),
+  new SlashCommandBuilder().setName('admin-contract').setDescription('[Admin] Manually create a contract'),
+  new SlashCommandBuilder().setName('admin-verify-claim').setDescription('[Admin] Force-approve a claim')
+    .addIntegerOption(o => o.setName('claim_id').setDescription('Claim ID to approve').setRequired(true)),
+  new SlashCommandBuilder().setName('testapi').setDescription('[Admin] Test Torn API connectivity'),
+].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
 
 (async () => {
   try {
-    console.log('Deploying slash commands...');
-    await rest.put(
-      Routes.applicationGuildCommands(
-        process.env.DISCORD_CLIENT_ID,
-        process.env.DISCORD_GUILD_ID
-      ),
-      { body: commands }
-    );
-    console.log('✅ Slash commands deployed successfully!');
-  } catch (err) {
-    console.error('❌ Failed to deploy commands:', err);
+    console.log(`Deploying ${commands.length} commands...`);
+    await rest.put(Routes.applicationCommands(process.env.DISCORD_CLIENT_ID), { body: commands });
+    console.log('✅ All commands deployed');
+  } catch (e) {
+    console.error('❌ Deploy failed:', e);
   }
 })();

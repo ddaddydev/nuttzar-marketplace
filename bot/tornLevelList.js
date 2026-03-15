@@ -247,11 +247,18 @@ async function refreshStatusCache(apiKey) {
     await Promise.all(ids.slice(i, i + 10).map(async id => {
       try {
         const res = await axios.get(
-          `https://api.torn.com/v2/user/${id}?selections=basic&key=${apiKey}&comment=NuttzarLvlList`,
+          `https://api.torn.com/v2/user/${id}?selections=basic,publicstatus&key=${apiKey}&comment=NuttzarLvlList`,
           { timeout: 8000 }
         );
-        const s = res.data?.status;
-        if (s) newMap.set(id, { state: s.state || 'Okay', until: s.until || 0 });
+        // v2 may return status under .status or .publicstatus for other players
+        const s = res.data?.status || res.data?.publicstatus;
+        if (s) {
+          const state = s.state || s.description || 'Okay';
+          const until = s.until || 0;
+          newMap.set(id, { state, until });
+          // Log first result to confirm field names are correct
+          if (newMap.size === 1) console.log('[LEVELLIST] Sample status:', JSON.stringify(s));
+        }
       } catch {}
     }));
     if (i + 10 < ids.length) await delay(700); // ~10 req/700ms = ~85 req/min, safe
@@ -273,7 +280,7 @@ function buildLevelListEmbeds() {
   const available = [], hosped = [];
   for (const t of main) {
     const s = _statusCache.get(t.id);
-    if (s?.state === 'Hospital' && s.until > now) hosped.push({ ...t, until: s.until });
+    if (s && s.state?.toLowerCase() === 'hospital' && s.until > now) hosped.push({ ...t, until: s.until });
     else available.push(t);
   }
   hosped.sort((a, b) => a.until - b.until);

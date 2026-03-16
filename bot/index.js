@@ -630,14 +630,8 @@ async function handleButton(interaction) {
   }
 
   if (id === 'open_verify_modal') {
-    // Check if already verified before showing modal
-    const existing = await get(`${BACKEND}/api/users/by-discord/${interaction.user.id}`);
-    if (existing?.data?.torn_id) {
-      return interaction.reply({
-        content: `✅ You're already verified as **${existing.data.torn_name}** [${existing.data.torn_id}]. Contact an admin if you need to relink.`,
-        ephemeral: true,
-      });
-    }
+    // Show modal immediately — Discord requires showModal() to be called synchronously
+    // Already-verified check happens in the modal submit handler
     return interaction.showModal(modal('modal_verify', 'Enter Your Torn API Key',
       textInput('api_key', 'Your Torn API Key (Full Access)', { placeholder: 'Paste your Full Access key here', min: 16, max: 32 })
     ));

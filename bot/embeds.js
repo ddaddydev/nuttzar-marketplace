@@ -144,7 +144,7 @@ function buildVerifySuccessEmbed(tornName, tornId) {
 function buildVerifyFailEmbed(reason) {
   return new EmbedBuilder()
     .setColor(0xE74C3C).setTitle('❌  Verification Failed')
-    .setDescription(`Could not verify your Torn API key.\n\n**Reason:** ${reason}\n\nMake sure your API key has **basic access** enabled.`)
+    .setDescription(`Could not verify your Torn API key.\n\n**Reason:** ${reason}`)
     .setFooter({ text: 'Nuttzar Marketplace' });
 }
 

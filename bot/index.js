@@ -423,32 +423,6 @@ async function handleSlash(interaction) {
     return interaction.editReply({ embeds: [buildBalanceEmbed(userRes?.data?.torn_name || `User [${tornId}]`, tornId, balResult)] });
   }
 
-  if (cmd === 'checkhospital') {
-    await interaction.deferReply({ ephemeral: true });
-
-    // Fetch user's stored API key from backend
-    const keyRes = await get(`${BACKEND}/api/users/by-discord/${interaction.user.id}/apikey`);
-    if (!keyRes?.data?.api_key) {
-      return interaction.editReply({ content: '❌ No API key found. Use `/verify` first to link your Torn account.' });
-    }
-
-    await interaction.editReply({ content: '🔍 Checking hospital status for all targets... takes about 3 minutes.' });
-
-    const results = await checkHospitalStatus(keyRes.data.api_key);
-    const checkedBy = interaction.user.username;
-    const embeds = buildHospitalEmbeds(results, checkedBy);
-
-    // Post publicly to the level list channel
-    const ch = await interaction.client.channels.fetch(LEVEL_LIST_CHANNEL_ID).catch(() => null);
-    if (!ch) return interaction.followUp({ content: '❌ Could not find the level list channel.', ephemeral: true });
-
-    for (const embed of embeds) {
-      await ch.send({ embeds: [embed] });
-    }
-
-    return interaction.followUp({ content: `✅ Hospital check posted to <#${LEVEL_LIST_CHANNEL_ID}>`, ephemeral: true });
-  }
-
   if (cmd === 'markpaid') {
     if (interaction.user.id !== ADMIN_DISCORD_ID) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     await interaction.deferReply({ ephemeral: true });
@@ -631,6 +605,29 @@ async function handleButton(interaction) {
   if (handled !== false) return;
 
   const { customId: id } = interaction;
+
+  if (id === 'btn_check_hospital') {
+    await interaction.deferReply({ ephemeral: true });
+
+    const keyRes = await get(`${BACKEND}/api/users/by-discord/${interaction.user.id}/apikey`);
+    if (!keyRes?.data?.api_key) {
+      return interaction.editReply({ content: '❌ You need to `/verify` first before running a hospital check.' });
+    }
+
+    await interaction.editReply({ content: '🔍 Checking hospital status for all targets... takes about 3 minutes.' });
+
+    const results = await checkHospitalStatus(keyRes.data.api_key);
+    const embeds  = buildHospitalEmbeds(results, interaction.user.username);
+
+    const ch = await interaction.client.channels.fetch(LEVEL_LIST_CHANNEL_ID).catch(() => null);
+    if (!ch) return interaction.followUp({ content: '❌ Could not find the level list channel.', ephemeral: true });
+
+    for (const embed of embeds) {
+      await ch.send({ embeds: [embed] });
+    }
+
+    return interaction.followUp({ content: `✅ Results posted above.`, ephemeral: true });
+  }
 
   if (id === 'open_verify_modal') {
     // Check if already verified before showing modal

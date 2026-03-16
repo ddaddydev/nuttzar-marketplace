@@ -9,6 +9,7 @@ const {
 } = require('./tornChannels');
 
 const { LEVEL_LIST_CHANNEL_ID, buildLevelListEmbeds } = require('./tornLevelList');
+const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
 
 // ── Tracked message IDs ───────────────────────────────────────────────────────
 let lootMsgId     = null;
@@ -128,10 +129,17 @@ async function refreshLevelList(client) {
     // Try to edit existing messages if count matches
     if (levelMsgIds.length === embeds.length) {
       let ok = true;
+      const hospBtn = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('btn_check_hospital')
+          .setLabel('🏥 Check Hospital Status')
+          .setStyle(ButtonStyle.Danger)
+      );
       for (let i = 0; i < embeds.length; i++) {
         try {
+          const isLast = i === embeds.length - 1;
           const msg = await ch.messages.fetch(levelMsgIds[i]);
-          await msg.edit({ embeds: [embeds[i]], components: [] });
+          await msg.edit({ embeds: [embeds[i]], components: isLast ? [hospBtn] : [] });
         } catch { ok = false; break; }
       }
       if (ok) return;
@@ -141,9 +149,18 @@ async function refreshLevelList(client) {
     // (bulkDelete fails on messages >14 days old, so we delete one by one)
     await deleteBotMessages(ch, client);
 
+    // Hospital check button — only on the last embed
+    const hospBtn = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('btn_check_hospital')
+        .setLabel('🏥 Check Hospital Status')
+        .setStyle(ButtonStyle.Danger)
+    );
+
     levelMsgIds = [];
-    for (const embed of embeds) {
-      const msg = await ch.send({ embeds: [embed] });
+    for (let i = 0; i < embeds.length; i++) {
+      const isLast = i === embeds.length - 1;
+      const msg = await ch.send({ embeds: [embeds[i]], components: isLast ? [hospBtn] : [] });
       levelMsgIds.push(msg.id);
     }
     console.log(`[CHANNELS] Level list posted (${embeds.length} embeds)`);

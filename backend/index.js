@@ -23,6 +23,7 @@ const flightPrefsRoutes       = require('./routes/flightPrefs');
 const { expirestaleClaims }   = require('./services/contracts');
 
 const app  = express();
+app.set('trust proxy', 1); // Railway sits behind a proxy
 const PORT = process.env.PORT || 3001;
 
 // ── IP lockout (in-memory) ────────────────────────────────────────────────────

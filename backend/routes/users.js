@@ -11,8 +11,9 @@ const internalAuth = require('../middleware/internalAuth');
 router.post('/verify', internalAuth, async (req, res) => {
   try {
     const { discord_id } = req.body;
-    const api_key = (req.body.api_key || '').trim();
-    if (!api_key)    return res.status(400).json({ success: false, error: 'API key required' });
+    const api_key = (req.body.api_key || '').trim().replace(/[\r\n\t]/g, '');
+    if (!api_key)         return res.status(400).json({ success: false, error: 'API key required' });
+    if (api_key.length !== 16) return res.status(400).json({ success: false, error: `Your API key looks incomplete — it should be exactly 16 characters, but you sent ${api_key.length}. Copy the full key from Torn and try again.` });
     if (!discord_id) return res.status(400).json({ success: false, error: 'Discord ID required' });
 
     console.log(`[VERIFY] key received — length: ${api_key.length}, chars: ${JSON.stringify(api_key)}`);

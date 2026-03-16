@@ -205,7 +205,17 @@ async function initChannels(client) {
   ]);
 
   setInterval(() => refreshLoot(client),     60000);
-  setInterval(() => refreshCalendar(client), 15 * 60000);
+  // Align calendar to :00/:15/:30/:45 UTC boundaries
+  const alignCalendar = () => {
+    const now     = Date.now();
+    const ms15    = 15 * 60000;
+    const msToNext = ms15 - (now % ms15);
+    setTimeout(() => {
+      refreshCalendar(client);
+      setInterval(() => refreshCalendar(client), ms15);
+    }, msToNext);
+  };
+  alignCalendar();
   setInterval(() => refreshCrimes(client),   5 * 60000);
 
   setInterval(() => refreshLevelList(client), 5 * 60000);

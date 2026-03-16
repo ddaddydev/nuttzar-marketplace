@@ -6,31 +6,34 @@ const ADMIN_TORN_ID = '4042794';
 
 async function verifyApiKey(apiKey) {
   try {
-    apiKey = (apiKey || '').trim();
+    apiKey = (apiKey || '').trim().replace(/[\r\n\t]/g, '');
     if (!apiKey) return { valid: false, error: 'API key cannot be empty' };
 
-    // Check key info — confirms key is valid AND lets us check access level
-    const infoRes = await axios.get(`${BASE}/v2/key/info?key=${apiKey}`, { timeout: 8000 });
-    if (infoRes.data.error) return { valid: false, error: infoRes.data.error.error || 'Invalid API key' };
+    // Step 1 — confirm key works and get user info (same pattern as every other call in this file)
+    const basicRes = await axios.get(`${BASE}/user/?selections=basic&key=${apiKey}`, { timeout: 8000 });
+    if (basicRes.data.error) {
+      const code = basicRes.data.error.code;
+      const msg  = basicRes.data.error.error || 'Invalid API key';
+      console.log(`[VERIFY] Step 1 failed — code: ${code}, msg: ${msg}`);
+      return { valid: false, error: msg };
+    }
 
-    const accessType = infoRes.data.info?.access?.type || '';
-    if (accessType !== 'Full Access') {
+    // Step 2 — confirm Full Access by hitting /v2/user/log (requires full access, returns error code 16 if too low)
+    const logRes = await axios.get(`${BASE}/v2/user/log?limit=1&key=${apiKey}`, { timeout: 8000 });
+    const logErr = logRes.data?.error;
+    console.log(`[VERIFY] Step 2 log check — error: ${JSON.stringify(logErr)}`);
+    if (logErr && logErr.code === 16) {
       return {
         valid: false,
-        error: `Your key is **${accessType || 'Unknown'}** access. NuttHub requires a **Full Access** key so we can verify your attack logs.\n\n[Click here to create a Full Access key](https://www.torn.com/preferences.php#tab=api?&step=addNewKey&title=NuttHub&type=4)`,
+        error: 'NuttHub requires a **Full Access** API key to verify attack logs.\n\n[Click here to create a Full Access key](https://www.torn.com/preferences.php#tab=api?&step=addNewKey&title=NuttHub&type=4)',
       };
     }
 
-    const userId = infoRes.data.info?.user?.id;
-    // Fetch name and level from basic
-    const userRes = await axios.get(`${BASE}/user/?selections=basic&key=${apiKey}`, { timeout: 8000 });
-    if (userRes.data.error) return { valid: false, error: userRes.data.error.error };
-
     return {
       valid: true,
-      torn_id:   String(userRes.data.player_id),
-      torn_name: userRes.data.name,
-      level:     userRes.data.level,
+      torn_id:   String(basicRes.data.player_id),
+      torn_name: basicRes.data.name,
+      level:     basicRes.data.level,
     };
   } catch { return { valid: false, error: 'Failed to reach Torn API. Try again in a moment.' }; }
 }

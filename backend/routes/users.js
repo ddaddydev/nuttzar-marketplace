@@ -15,6 +15,7 @@ router.post('/verify', internalAuth, async (req, res) => {
     if (!api_key)    return res.status(400).json({ success: false, error: 'API key required' });
     if (!discord_id) return res.status(400).json({ success: false, error: 'Discord ID required' });
 
+    console.log(`[VERIFY] key received — length: ${api_key.length}, chars: ${JSON.stringify(api_key)}`);
     const tornCheck = await verifyApiKey(api_key);
     if (!tornCheck.valid) return res.status(400).json({ success: false, error: tornCheck.error });
 

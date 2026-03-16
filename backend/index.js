@@ -84,9 +84,8 @@ app.use(cors({
 // ── Body parser — 10kb limit prevents memory exhaustion ───────────────────────
 app.use(express.json({ limit: '10kb' }));
 
-// ── Redact API keys from logs — never let them appear in plaintext ────────────
+// ── Redact sensitive fields from logs (api_key is handled securely in routes) ─
 app.use((req, _res, next) => {
-  if (req.body?.api_key)        req.body.api_key        = '[REDACTED]';
   if (req.body?.buyer_api_key)  req.body.buyer_api_key  = '[REDACTED]';
   if (req.body?.internal_key)   req.body.internal_key   = '[REDACTED]';
   next();

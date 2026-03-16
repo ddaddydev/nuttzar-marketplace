@@ -14,6 +14,7 @@ const {
 } = require('./embeds');
 const { fetchScoredItems, buildStockEmbed, buildAlertSelectionEmbed, buildAlertEmbed, FLIGHT_MINS } = require('./flightAlerts');
 const { initChannels, handleChannelButton } = require('./channelManager');
+const { LEVEL_LIST_CHANNEL_ID, checkHospitalStatus, buildHospitalEmbeds } = require('./tornLevelList');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const ADMIN_TORN_ID           = '4042794';
@@ -539,17 +540,21 @@ async function handleModal(interaction) {
 
   if (id === 'modal_verify') {
     await interaction.deferReply({ ephemeral: true });
-    const result = await api.verifyUser(field('api_key'), interaction.user.id);
+    const apiKey = field('api_key').trim();
+    const result = await api.verifyUser(apiKey, interaction.user.id);
     if (!result.success) return interaction.editReply({ embeds: [buildVerifyFailEmbed(result.error)] });
     try {
       const member = await interaction.guild.members.fetch(interaction.user.id);
       await member.setNickname(`${result.torn_name} [${result.torn_id}]`).catch(() => {});
-      const role = interaction.guild.roles.cache.get(VERIFIED_ROLE_ID);
-      if (role) await member.roles.add(role);
+      const verifiedRole = interaction.guild.roles.cache.get(VERIFIED_ROLE_ID);
+      if (verifiedRole) await member.roles.add(verifiedRole);
+      // Also grant Verified Seller automatically
+      const sellerRole = interaction.guild.roles.cache.get(VERIFIED_SELLER_ROLE_ID);
+      if (sellerRole) await member.roles.add(sellerRole);
     } catch (e) { console.warn('[BOT] verify role/nick:', e.message); }
     await interaction.editReply({ embeds: [buildVerifySuccessEmbed(result.torn_name, result.torn_id)] });
     await interaction.followUp({
-      content: '✅ Verified! Choose your **travel class** for flight profit calculations:',
+      content: '✅ Verified as **Verified Seller**! Now set your travel class for flight profit calculations:',
       components: [row(
         btn('setup_class:std',      'Standard',  ButtonStyle.Secondary),
         btn('setup_class:airstrip', 'Airstrip',  ButtonStyle.Secondary),
@@ -628,8 +633,16 @@ async function handleButton(interaction) {
   const { customId: id } = interaction;
 
   if (id === 'open_verify_modal') {
+    // Check if already verified before showing modal
+    const existing = await get(`${BACKEND}/api/users/by-discord/${interaction.user.id}`);
+    if (existing?.data?.torn_id) {
+      return interaction.reply({
+        content: `✅ You're already verified as **${existing.data.torn_name}** [${existing.data.torn_id}]. Contact an admin if you need to relink.`,
+        ephemeral: true,
+      });
+    }
     return interaction.showModal(modal('modal_verify', 'Enter Your Torn API Key',
-      textInput('api_key', 'Your Torn API Key', { placeholder: 'Paste your key here', min: 16, max: 32 })
+      textInput('api_key', 'Your Torn API Key (Full Access)', { placeholder: 'Paste your Full Access key here', min: 16, max: 32 })
     ));
   }
 

@@ -10,14 +10,29 @@ const internalAuth = require('../middleware/internalAuth');
 // Protected: internal key required
 router.post('/verify', internalAuth, async (req, res) => {
   try {
-    const { api_key, discord_id } = req.body;
+    const { discord_id } = req.body;
+    const api_key = (req.body.api_key || '').trim();
     if (!api_key)    return res.status(400).json({ success: false, error: 'API key required' });
     if (!discord_id) return res.status(400).json({ success: false, error: 'Discord ID required' });
 
     const tornCheck = await verifyApiKey(api_key);
     if (!tornCheck.valid) return res.status(400).json({ success: false, error: tornCheck.error });
 
-    getDb().prepare(`
+    const db = getDb();
+
+    // Block if this Discord account is already verified
+    const existingDiscord = db.prepare('SELECT torn_id, torn_name FROM users WHERE discord_id = ? AND is_verified = 1').get(discord_id);
+    if (existingDiscord) {
+      return res.status(409).json({ success: false, error: `You are already verified as **${existingDiscord.torn_name}** [${existingDiscord.torn_id}]. Contact an admin if you need to relink.` });
+    }
+
+    // Block if this Torn ID is already linked to a DIFFERENT Discord account
+    const existingTorn = db.prepare('SELECT discord_id FROM users WHERE torn_id = ?').get(tornCheck.torn_id);
+    if (existingTorn && existingTorn.discord_id !== discord_id) {
+      return res.status(409).json({ success: false, error: 'This Torn account is already linked to another Discord user. Contact an admin if this is a mistake.' });
+    }
+
+    db.prepare(`
       INSERT INTO users (torn_id, torn_name, discord_id, encrypted_api_key, role, is_verified)
       VALUES (?, ?, ?, ?, 'seller', 1)
       ON CONFLICT(torn_id) DO UPDATE SET

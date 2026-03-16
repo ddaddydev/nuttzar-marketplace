@@ -6,10 +6,33 @@ const ADMIN_TORN_ID = '4042794';
 
 async function verifyApiKey(apiKey) {
   try {
-    const res = await axios.get(`${BASE}/user/?selections=basic&key=${apiKey}`, { timeout: 8000 });
-    if (res.data.error) return { valid: false, error: res.data.error.error };
-    return { valid: true, torn_id: String(res.data.player_id), torn_name: res.data.name, level: res.data.level };
-  } catch { return { valid: false, error: 'Failed to reach Torn API' }; }
+    apiKey = (apiKey || '').trim();
+    if (!apiKey) return { valid: false, error: 'API key cannot be empty' };
+
+    // Check key info — confirms key is valid AND lets us check access level
+    const infoRes = await axios.get(`${BASE}/v2/key/info?key=${apiKey}`, { timeout: 8000 });
+    if (infoRes.data.error) return { valid: false, error: infoRes.data.error.error || 'Invalid API key' };
+
+    const accessType = infoRes.data.info?.access?.type || '';
+    if (accessType !== 'Full Access') {
+      return {
+        valid: false,
+        error: `Your key is **${accessType || 'Unknown'}** access. NuttHub requires a **Full Access** key so we can verify your attack logs.\n\n[Click here to create a Full Access key](https://www.torn.com/preferences.php#tab=api?&step=addNewKey&title=NuttHub&type=4)`,
+      };
+    }
+
+    const userId = infoRes.data.info?.user?.id;
+    // Fetch name and level from basic
+    const userRes = await axios.get(`${BASE}/user/?selections=basic&key=${apiKey}`, { timeout: 8000 });
+    if (userRes.data.error) return { valid: false, error: userRes.data.error.error };
+
+    return {
+      valid: true,
+      torn_id:   String(userRes.data.player_id),
+      torn_name: userRes.data.name,
+      level:     userRes.data.level,
+    };
+  } catch { return { valid: false, error: 'Failed to reach Torn API. Try again in a moment.' }; }
 }
 
 async function verifyPayment(buyerApiKey, expectedAmount) {

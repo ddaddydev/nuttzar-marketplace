@@ -14,7 +14,8 @@ const {
 } = require('./embeds');
 const {
   fetchScoredItems, fetchBestForWindow,
-  buildStockEmbed, buildBestArrivalEmbed, buildAlertSelectionEmbed, buildAlertEmbed,
+  buildInStockEmbed, buildPredictedEmbed, buildBestArrivalEmbed,
+  buildAlertSelectionEmbed, buildAlertEmbed,
   FLIGHT_MINS, closestWindow,
 } = require('./flightAlerts');
 const { initChannels, handleChannelButton, updateHospitalResults } = require('./channelManager');
@@ -46,7 +47,8 @@ const placeholderMessages = new Map();
 const notifiedPayouts     = new Set();
 const notifiedAlerts      = new Map();
 
-let flightEmbedMsgId = null;
+let flightInStockMsgId = null;
+let flightPredictedMsgId = null;
 
 // ── Client ────────────────────────────────────────────────────────────────────
 const client = new Client({
@@ -136,27 +138,40 @@ async function postBecomeSeller() {
   } catch (e) { console.error('[BOT] postBecomeSeller:', e.message); }
 }
 
-// ── Flight intel embed ────────────────────────────────────────────────────────
+// ── Flight intel embeds (two messages: in-stock + predicted) ─────────────────
 async function refreshFlightEmbed() {
   try {
     const ch = await client.channels.fetch(CHANNEL_IDS.flight).catch(() => null);
     if (!ch) return;
     const { inStock, predicted, updatedAt } = await fetchScoredItems();
-    const embed = buildStockEmbed(inStock, predicted, updatedAt);
-    const btns  = row(
-      btn('toggle_flyer_role', '🔔 Get Flight Alerts'),
-      btn('open_flight_setup', '⚙️ Set Class & Capacity')
+
+    const stockEmbed = buildInStockEmbed(inStock, updatedAt);
+    const predEmbed  = buildPredictedEmbed(predicted, updatedAt);
+    const btns = row(
+      btn('toggle_flyer_role', '\U0001f514 Get Flight Alerts'),
+      btn('open_flight_setup', '\u2699\ufe0f Set Class & Capacity')
     );
-    if (flightEmbedMsgId) {
+
+    // Try to edit both existing messages
+    if (flightInStockMsgId && flightPredictedMsgId) {
       try {
-        const msg = await ch.messages.fetch(flightEmbedMsgId);
-        await msg.edit({ embeds: [embed], components: [btns] });
+        const m1 = await ch.messages.fetch(flightInStockMsgId);
+        const m2 = await ch.messages.fetch(flightPredictedMsgId);
+        await m1.edit({ embeds: [stockEmbed] });
+        await m2.edit({ embeds: [predEmbed], components: [btns] });
         return;
-      } catch { flightEmbedMsgId = null; }
+      } catch {
+        flightInStockMsgId   = null;
+        flightPredictedMsgId = null;
+      }
     }
+
+    // Post fresh — purge old bot messages first
     await purgeChannel(CHANNEL_IDS.flight);
-    const msg = await ch.send({ embeds: [embed], components: [btns] });
-    flightEmbedMsgId = msg.id;
+    const m1 = await ch.send({ embeds: [stockEmbed] });
+    const m2 = await ch.send({ embeds: [predEmbed], components: [btns] });
+    flightInStockMsgId   = m1.id;
+    flightPredictedMsgId = m2.id;
   } catch (e) { console.error('[BOT] refreshFlightEmbed:', e.message); }
 }
 

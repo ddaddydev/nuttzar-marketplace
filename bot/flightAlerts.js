@@ -157,93 +157,93 @@ async function fetchBestForWindow(flightMins, limit = 10) {
   };
 }
 
-// ── Main channel embed ────────────────────────────────────────────────────────
+// ── In-stock embed ───────────────────────────────────────────────────────────
 
-function buildStockEmbed(inStock, predicted, updatedAt) {
+function buildInStockEmbed(inStock, updatedAt) {
   const age    = updatedAt ? Math.round((Date.now() - updatedAt) / 60000) : null;
   const ageStr = age == null ? '—' : age < 2 ? 'Fresh 🟢' : age < 20 ? `${age}m 🟡` : `${age}m 🔴`;
 
-  // In-stock: show 30/60/90m windows + state + conf
   const stockLines = inStock.length
     ? inStock.map((item, i) => {
         const flag  = CC_FLAGS[item.country] || '🌍';
-        const w30   = item.windows[30];
-        const w60   = item.windows[60];
-        const w90   = item.windows[90];
-        const conf  = confShort(w30?.confidencePct);
+        const conf  = confShort(item.windows[30]?.confidencePct);
         const score = item.opportunity.label ? ` · *${item.opportunity.label}*` : '';
 
-        const arrival = [
-          w30 ? `30m: ${starStr(w30.stars)} ~${fmtQty(w30.expectedStock)}` : null,
-          w60 ? `60m: ${starStr(w60.stars)} ~${fmtQty(w60.expectedStock)}` : null,
-          w90 ? `90m: ${starStr(w90.stars)} ~${fmtQty(w90.expectedStock)}` : null,
-        ].filter(Boolean).join(' · ');
+        // Depletion: how long until empty based on burn rate
+        let depletionStr = 'Rate unknown';
+        if (item.burnRate && item.burnRate > 0) {
+          const minsLeft = Math.round(item.qty / item.burnRate);
+          const h = Math.floor(minsLeft / 60), m = minsLeft % 60;
+          const timeStr = h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+          const depletesAt = new Date(Date.now() + minsLeft * 60000).toUTCString().match(/(\d{2}:\d{2})/)?.[1] || '?';
+          depletionStr = `~${timeStr} left · empty ~${depletesAt} TCT`;
+        }
 
         return (
           `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}**\n` +
-          `　${fmtQty(item.qty)} now · ${stateStr(item.marketState)}${score}\n` +
-          `　${arrival}\n` +
+          `　${fmtQty(item.qty)} in stock · ${stateStr(item.marketState)}${score}\n` +
+          `　📉 Depletes: ${depletionStr}\n` +
           `　Conf: ${conf}` +
           (item.margin > 0 ? ` · ${fmt(item.margin)}/unit` : '')
         );
       }).join('\n\n')
     : '_No quality in-stock opportunities right now_';
 
-  // Predicted: compact per-item block — TCT restock time + per-class stock outlook
+  return {
+    color: 0x5865F2,
+    title: '📦 Top In-Stock Opportunities',
+    description: '> Ranked by opportunity score',
+    fields: [{ name: '📦 In Stock Now', value: stockLines, inline: false }],
+    footer: { text: `Data age: ${ageStr} · Refreshes every 15 mins` },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+// ── Predicted embed ───────────────────────────────────────────────────────────
+
+function buildPredictedEmbed(predicted, updatedAt) {
+  const age    = updatedAt ? Math.round((Date.now() - updatedAt) / 60000) : null;
+  const ageStr = age == null ? '—' : age < 2 ? 'Fresh 🟢' : age < 20 ? `${age}m 🟡` : `${age}m 🔴`;
+
   const predLines = predicted.length
     ? predicted.map((item, i) => {
-        const flag      = CC_FLAGS[item.country] || '🌍';
-        const flightTbl = FLIGHT_MINS[item.country] || {};
-        const now       = Date.now();
+        const flag = CC_FLAGS[item.country] || '🌍';
+        const now  = Date.now();
+        const stdW = item.windows?.[closestWindow(FLIGHT_MINS[item.country]?.std || 120)];
+        const conf = confShort(stdW?.confidencePct);
 
-        // Restock ETA in TCT
-        let restockStr = '*unknown*';
+        let restockStr = '*No restock history*';
         if (item.lastEmptyAt && item.avgRestockMins) {
           const etaMs    = item.lastEmptyAt + item.avgRestockMins * 60000;
           const minsAway = Math.round((etaMs - now) / 60000);
           const tct      = new Date(etaMs).toUTCString().match(/(\d{2}:\d{2})/)?.[1] || '?';
           restockStr = minsAway <= 0
-            ? `overdue (~${tct} TCT)`
-            : `~${tct} TCT (in ${minsAway}m)`;
+            ? `⚡ Overdue — could restock any time (~${tct} TCT predicted)`
+            : `⏰ ~${tct} TCT (in ${minsAway}m)`;
         }
-
-        // Per-class: land time vs restock, one line each
-        const clsLabels = { std:'Std', airstrip:'Air', wlt:'WLT', business:'Biz' };
-        const clsLines  = Object.entries(flightTbl).map(([cls, mins]) => {
-          const wKey = closestWindow(mins);
-          const w    = item.windows?.[wKey];
-          if (!w) return null;
-          const landTct = new Date(now + mins * 60000).toUTCString().match(/(\d{2}:\d{2})/)?.[1] || '?';
-          const lbl     = clsLabels[cls] || cls;
-          const est     = w.expectedStock > 0 ? `~${fmtQty(w.expectedStock)}` : 'empty';
-          return `${lbl}(${mins}m→${landTct}): **${est}**`;
-        }).filter(Boolean).join(' · ');
-
-        const stdW = item.windows?.[closestWindow(flightTbl.std || 120)];
-        const conf = confShort(stdW?.confidencePct);
 
         return (
           `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}**\n` +
           `　${stateStr(item.marketState)} · Conf: ${conf}\n` +
-          `　⏰ Restock: ${restockStr}\n` +
-          `　${clsLines || 'No data'}`
+          `　${restockStr}`
         );
       }).join('\n\n')
-    : '_No predicted restocks matching current windows_';
+    : '_No predicted restocks right now_';
 
   return {
-    color: 0x5865F2,
-    title: '✈️ Nuttzar Flight Intel',
-    description:
-      '> ⚠️ *Predictions are estimates — always verify before travelling.*\n' +
-      '> Windows at **Standard** class · `/flightsetup` to personalise alerts',
-    fields: [
-      { name: '📦 Top In-Stock Opportunities',        value: stockLines, inline: false },
-      { name: '🔮 Top Predicted Restocks (empty now)', value: predLines,  inline: false },
-    ],
+    color: 0x9B59B6,
+    title: '🔮 Predicted Restocks',
+    description: '> ⚠️ *Based on historical patterns — always verify before flying*',
+    fields: [{ name: '🔮 Empty Now — Restock Predicted', value: predLines, inline: false }],
     footer: { text: `Data age: ${ageStr} · v3 prediction engine · Refreshes every 15 mins` },
     timestamp: new Date().toISOString(),
   };
+}
+
+// ── Legacy combined embed (kept for bestarrival + alerts) ─────────────────────
+
+function buildStockEmbed(inStock, predicted, updatedAt) {
+  return buildInStockEmbed(inStock, updatedAt);
 }
 
 // ── Best-for-arrival embed ─────────────────────────────────────────────────────
@@ -356,6 +356,8 @@ module.exports = {
   fetchScoredItems,
   fetchBestForWindow,
   buildStockEmbed,
+  buildInStockEmbed,
+  buildPredictedEmbed,
   buildBestArrivalEmbed,
   buildAlertSelectionEmbed,
   buildAlertEmbed,

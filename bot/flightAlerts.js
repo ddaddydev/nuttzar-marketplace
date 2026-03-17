@@ -187,26 +187,76 @@ function buildStockEmbed(inStock, predicted, updatedAt) {
       }).join('\n\n')
     : '_No quality in-stock opportunities right now_';
 
-  // Predicted: show refill % per window
+  // Predicted: show TCT restock estimate + per-class stock prediction if leaving now
   const predLines = predicted.length
     ? predicted.map((item, i) => {
-        const flag  = CC_FLAGS[item.country] || '🌍';
-        const w30   = item.windows[30];
-        const w60   = item.windows[60];
-        const w90   = item.windows[90];
-        const conf  = confShort(w30?.confidencePct);
+        const flag      = CC_FLAGS[item.country] || '🌍';
+        const flightTbl = FLIGHT_MINS[item.country] || {};
+        const now       = Date.now();
 
-        const refills = [
-          w30?.refillChance > 0 ? `30m: ${w30.refillChance}% → ~${fmtQty(w30.expectedStock)}` : null,
-          w60?.refillChance > 0 ? `60m: ${w60.refillChance}% → ~${fmtQty(w60.expectedStock)}` : null,
-          w90?.refillChance > 0 ? `90m: ${w90.refillChance}% → ~${fmtQty(w90.expectedStock)}` : null,
-        ].filter(Boolean).join(' · ');
+        // ── Restock ETA ──────────────────────────────────────────────────────
+        // Predicted restock time = lastEmptyAt + avgRestockMins
+        let restockLine = '⏰ Restock time: *unknown*';
+        let restockEtaMs = null;
+        if (item.lastEmptyAt && item.avgRestockMins) {
+          restockEtaMs   = item.lastEmptyAt + item.avgRestockMins * 60000;
+          const minsAway = Math.round((restockEtaMs - now) / 60000);
+          const tct      = new Date(restockEtaMs).toUTCString().match(/(\d{2}:\d{2})/)?.[1] || '?';
+          if (minsAway <= 0) {
+            restockLine = `⏰ Restock overdue — could happen any time (predicted ~${tct} TCT)`;
+          } else {
+            restockLine = `⏰ Restock predicted: **~${tct} TCT** (in ~${minsAway}m)`;
+          }
+        } else if (item.lastEmptyAt && !item.avgRestockMins) {
+          restockLine = '⏰ Restock time: *not enough history*';
+        }
+
+        // ── Per-class: land time vs restock, expected stock ──────────────────
+        const clsLabels = { std:'Standard', airstrip:'Airstrip', wlt:'WLT', business:'Business' };
+        const classLines = Object.entries(flightTbl).map(([cls, mins]) => {
+          const landEtaMs = now + mins * 60000;
+          const landTct   = new Date(landEtaMs).toUTCString().match(/(\d{2}:\d{2})/)?.[1] || '?';
+          const wKey      = closestWindow(mins);
+          const w         = item.windows?.[wKey];
+          const clsLabel  = clsLabels[cls] || cls;
+
+          if (!w) return `　• **${clsLabel}** (~${mins}m · land ~${landTct} TCT): *no data*`;
+
+          // Will restock have happened by landing?
+          let stockStr;
+          if (restockEtaMs && landEtaMs >= restockEtaMs) {
+            // Landing after predicted restock — show expected stock
+            const est = item.restockQty
+              ? Math.min(w.expectedStock, item.restockQty)
+              : w.expectedStock;
+            stockStr = est > 0
+              ? `~${fmtQty(est)} stock predicted ✅`
+              : `restock expected but qty unknown`;
+          } else if (restockEtaMs && landEtaMs < restockEtaMs) {
+            // Landing before restock — tell them how early they'd arrive
+            const earlyMins = Math.round((restockEtaMs - landEtaMs) / 60000);
+            stockStr = `arrive ~${earlyMins}m before restock ⚠️`;
+          } else {
+            // No restock ETA — fall back to window's expectedStock
+            stockStr = w.expectedStock > 0
+              ? `~${fmtQty(w.expectedStock)} est. (${w.refillChance}% refill chance)`
+              : `unlikely to have stock`;
+          }
+
+          return `　• **${clsLabel}** (~${mins}m · land ~${landTct} TCT): ${stockStr}`;
+        });
+
+        // Use std window for confidence
+        const stdMins = flightTbl.std || 120;
+        const stdW    = item.windows?.[closestWindow(stdMins)];
+        const conf    = confShort(stdW?.confidencePct);
 
         return (
           `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}** · *empty*\n` +
-          `　${stateStr(item.marketState)}\n` +
-          `　${refills || 'No refill data'}\n` +
-          `　Conf: ${conf}`
+          `　${stateStr(item.marketState)} · Conf: ${conf}\n` +
+          `　${restockLine}\n` +
+          `　*If leaving now:*\n` +
+          classLines.join('\n')
         );
       }).join('\n\n')
     : '_No predicted restocks matching current windows_';

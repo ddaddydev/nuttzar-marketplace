@@ -1,5 +1,5 @@
 // bot/channelManager.js
-// Manages persistent embeds: Loot Timer, Crimes Intel, Calendar/TCT, Level List
+// Manages persistent embeds: Loot Timer, Crimes Intel, Calendar/TCT, Level List, Hospital Results
 
 const {
   buildLootEmbed, buildCalendarEmbed, buildCrimesEmbed, fetchCrimesData,
@@ -18,7 +18,89 @@ let calendarMsgId = null;
 let levelMsgIds   = []; // array — dynamic embed count
 
 let _prevCrimesAlert = false;
-let _crimesPingMsgId = null; // track ping so we can delete it when alert clears
+let _crimesPingMsgId = null;
+
+// ── Hospital results channel ──────────────────────────────────────────────────
+const HOSPITAL_CHANNEL_ID  = '1483273417653358785';
+let hospitalControlMsgId   = null;
+let hospitalResultMsgIds   = [];
+let hospitalLastCheckAt    = null;
+const HOSPITAL_STALE_MS    = 2 * 60 * 60000; // 2 hours
+
+function buildHospitalControlPayload() {
+  const hospBtn = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('btn_check_hospital')
+      .setLabel('🏥 Check Hospital Status')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  const isStale = !hospitalLastCheckAt || (Date.now() - hospitalLastCheckAt > HOSPITAL_STALE_MS);
+  const statusLine = isStale
+    ? '⚠️ **No recent data** — click to update'
+    : `✅ Last updated: <t:${Math.floor(hospitalLastCheckAt / 1000)}:R>`;
+
+  return {
+    content: [
+      '## 🏥 Hospital Status Tracker',
+      'Runs a live hospital check on all level-list targets using your stored API key.',
+      '_You must be verified to use this. Results update in this channel._',
+      '',
+      statusLine,
+    ].join('\n'),
+    components: [hospBtn],
+  };
+}
+
+async function initHospitalChannel(client) {
+  try {
+    const ch = await client.channels.fetch(HOSPITAL_CHANNEL_ID).catch(() => null);
+    if (!ch) return console.warn('[CHANNELS] Hospital results channel not found');
+
+    // Purge existing bot messages (clean slate on restart)
+    const fetched = await ch.messages.fetch({ limit: 100 });
+    const botMsgs = [...fetched.filter(m => m.author.id === client.user.id).values()];
+    for (const msg of botMsgs) await msg.delete().catch(() => {});
+
+    // Post fresh control message (no data state)
+    const ctrl = await ch.send(buildHospitalControlPayload());
+    hospitalControlMsgId = ctrl.id;
+    console.log('[CHANNELS] Hospital channel initialized');
+  } catch (e) { console.error('[CHANNELS] initHospitalChannel:', e.message); }
+}
+
+async function updateHospitalResults(client, embeds) {
+  try {
+    const ch = await client.channels.fetch(HOSPITAL_CHANNEL_ID).catch(() => null);
+    if (!ch) return;
+
+    hospitalLastCheckAt = Date.now();
+
+    // Delete old result embeds
+    for (const msgId of hospitalResultMsgIds) {
+      try { await (await ch.messages.fetch(msgId)).delete(); } catch {}
+    }
+    hospitalResultMsgIds = [];
+
+    // Delete old control message so we can repost it at the bottom
+    if (hospitalControlMsgId) {
+      try { await (await ch.messages.fetch(hospitalControlMsgId)).delete(); } catch {}
+      hospitalControlMsgId = null;
+    }
+
+    // Post result embeds
+    for (const embed of embeds) {
+      const msg = await ch.send({ embeds: [embed] });
+      hospitalResultMsgIds.push(msg.id);
+    }
+
+    // Repost control message at bottom with fresh timestamp
+    const ctrl = await ch.send(buildHospitalControlPayload());
+    hospitalControlMsgId = ctrl.id;
+
+    console.log(`[CHANNELS] Hospital results updated (${embeds.length} embeds)`);
+  } catch (e) { console.error('[CHANNELS] updateHospitalResults:', e.message); }
+}
 
 // ── Generic upsert — edit if we have message ID, otherwise post fresh ─────────
 async function upsertEmbed(client, channelId, getMsgId, setMsgId, embed, components) {
@@ -84,25 +166,17 @@ async function refreshCrimes(client) {
       embed, crimeSignupRow()
     );
 
-    // Only ping on new alert. Delete old ping first so channel stays clean.
     if (isNewAlert) {
       if (_crimesPingMsgId) {
-        try {
-          const old = await ch.messages.fetch(_crimesPingMsgId);
-          await old.delete();
-        } catch {}
+        try { await (await ch.messages.fetch(_crimesPingMsgId)).delete(); } catch {}
         _crimesPingMsgId = null;
       }
       const pingMsg = await ch.send({ content: `<@&${CRIME_ROLE}> 🚨 Crime opportunity is live!` });
       _crimesPingMsgId = pingMsg.id;
     }
 
-    // Delete ping when alert clears (so it doesn't linger after the window passes)
     if (!hasAlert && _crimesPingMsgId) {
-      try {
-        const old = await ch.messages.fetch(_crimesPingMsgId);
-        await old.delete();
-      } catch {}
+      try { await (await ch.messages.fetch(_crimesPingMsgId)).delete(); } catch {}
       _crimesPingMsgId = null;
     }
   } catch (e) { console.error('[CHANNELS] refreshCrimes:', e.message); }
@@ -113,9 +187,7 @@ async function deleteBotMessages(ch, client) {
   try {
     const fetched = await ch.messages.fetch({ limit: 100 });
     const botMsgs = [...fetched.filter(m => m.author.id === client.user.id).values()];
-    for (const msg of botMsgs) {
-      await msg.delete().catch(() => {});
-    }
+    for (const msg of botMsgs) await msg.delete().catch(() => {});
   } catch {}
 }
 
@@ -126,7 +198,6 @@ async function refreshLevelList(client) {
 
     const embeds = buildLevelListEmbeds();
 
-    // Try to edit existing messages if count matches
     if (levelMsgIds.length === embeds.length) {
       let ok = true;
       const hospBtn = new ActionRowBuilder().addComponents(
@@ -145,11 +216,8 @@ async function refreshLevelList(client) {
       if (ok) return;
     }
 
-    // Count mismatch or edit failed — delete all bot messages individually
-    // (bulkDelete fails on messages >14 days old, so we delete one by one)
     await deleteBotMessages(ch, client);
 
-    // Hospital check button — only on the last embed
     const hospBtn = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId('btn_check_hospital')
@@ -202,13 +270,15 @@ async function initChannels(client) {
     refreshCalendar(client),
     refreshCrimes(client),
     refreshLevelList(client),
+    initHospitalChannel(client),
   ]);
 
-  setInterval(() => refreshLoot(client),     60000);
+  setInterval(() => refreshLoot(client), 60000);
+
   // Align calendar to :00/:15/:30/:45 UTC boundaries
   const alignCalendar = () => {
-    const now     = Date.now();
-    const ms15    = 15 * 60000;
+    const now      = Date.now();
+    const ms15     = 15 * 60000;
     const msToNext = ms15 - (now % ms15);
     setTimeout(() => {
       refreshCalendar(client);
@@ -216,11 +286,22 @@ async function initChannels(client) {
     }, msToNext);
   };
   alignCalendar();
-  setInterval(() => refreshCrimes(client),   5 * 60000);
 
+  setInterval(() => refreshCrimes(client),    5 * 60000);
   setInterval(() => refreshLevelList(client), 5 * 60000);
+
+  // Refresh hospital control message staleness indicator every 15 mins
+  setInterval(async () => {
+    if (!hospitalControlMsgId) return;
+    try {
+      const ch  = await client.channels.fetch(HOSPITAL_CHANNEL_ID).catch(() => null);
+      if (!ch) return;
+      const msg = await ch.messages.fetch(hospitalControlMsgId).catch(() => null);
+      if (msg) await msg.edit(buildHospitalControlPayload());
+    } catch {}
+  }, 15 * 60000);
 
   console.log('[CHANNELS] All pollers started');
 }
 
-module.exports = { initChannels, handleChannelButton };
+module.exports = { initChannels, handleChannelButton, updateHospitalResults, HOSPITAL_CHANNEL_ID };

@@ -12,8 +12,12 @@ const {
   buildPayoutEmbed, buildBalanceEmbed, buildVerifySuccessEmbed, buildVerifyFailEmbed,
   buildNoContractsEmbed, formatMoney,
 } = require('./embeds');
-const { fetchScoredItems, buildStockEmbed, buildAlertSelectionEmbed, buildAlertEmbed, FLIGHT_MINS } = require('./flightAlerts');
-const { initChannels, handleChannelButton } = require('./channelManager');
+const {
+  fetchScoredItems, fetchBestForWindow,
+  buildStockEmbed, buildBestArrivalEmbed, buildAlertSelectionEmbed, buildAlertEmbed,
+  FLIGHT_MINS, closestWindow,
+} = require('./flightAlerts');
+const { initChannels, handleChannelButton, updateHospitalResults } = require('./channelManager');
 const { LEVEL_LIST_CHANNEL_ID, checkHospitalStatus, buildHospitalEmbeds } = require('./tornLevelList');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -30,7 +34,7 @@ const CHANNEL_IDS = {
   bounty:    process.env.DISCORD_BOUNTY_CHANNEL,
   escape:    process.env.DISCORD_ESCAPE_CHANNEL,
   payout:    process.env.DISCORD_PAYOUT_CHANNEL,
-  alerts:    '1481475449182748797', // failed/partial/wrong-outcome claim alerts
+  alerts:    '1481475449182748797',
   howToSell: '1481079970490220686',
   flight:    '1482148186138214494',
 };
@@ -40,7 +44,7 @@ const contractMessages    = new Map();
 const payoutMessages      = new Map();
 const placeholderMessages = new Map();
 const notifiedPayouts     = new Set();
-const notifiedAlerts      = new Map(); // `${discordId}:${itemId}:${country}` -> ts
+const notifiedAlerts      = new Map();
 
 let flightEmbedMsgId = null;
 
@@ -176,17 +180,20 @@ async function pollFlightAlerts() {
 
       for (const item of allItems) {
         if (!subSet.has(String(item.id))) continue;
+        if (!item.windows) continue;
 
-        const flMins = FLIGHT_MINS[item.country]?.[cls] || FLIGHT_MINS[item.country]?.std || 120;
-        const flMs   = flMins * 60000;
+        const flMins  = FLIGHT_MINS[item.country]?.[cls] || FLIGHT_MINS[item.country]?.std || 120;
+        const wKey    = closestWindow(flMins);
+        const w       = item.windows[wKey];
+        if (!w) continue;
+
         let shouldAlert = false;
-
-        if (item.inStock && item.depletionEtaMs) {
-          const toEmpty = item.depletionEtaMs - now;
-          shouldAlert = toEmpty > 0 && toEmpty <= flMs * 1.1;
-        } else if (!item.inStock && item.restockEtaMs) {
-          const toRestock = item.restockEtaMs - now;
-          shouldAlert = toRestock >= 0 && toRestock <= flMs;
+        if (item.qty > 0) {
+          // In stock but will deplete before landing — worth alerting if refill is likely
+          shouldAlert = w.depletes && w.refillChance >= 25;
+        } else {
+          // Empty — alert if good refill chance at this flight window
+          shouldAlert = w.refillChance >= 30;
         }
         if (!shouldAlert) continue;
 
@@ -319,7 +326,7 @@ client.once(Events.ClientReady, async () => {
   await refreshFlightEmbed();
   await initChannels(client);
   setInterval(pollPayouts,        30000);
-  setInterval(refreshFlightEmbed, 5 * 60000);
+  setInterval(refreshFlightEmbed, 15 * 60000); // matches worker update frequency
   setInterval(pollFlightAlerts,   2 * 60000);
   console.log('[BOT] Ready');
 });
@@ -389,6 +396,16 @@ async function handleSlash(interaction) {
       })));
 
     return interaction.editReply({ embeds: [buildAlertSelectionEmbed(inStock, predicted, prefs.subscribed_items)], components: rows });
+  }
+
+  if (cmd === 'bestarrival') {
+    await interaction.deferReply({ ephemeral: false });
+    const mins = Math.max(1, Math.min(300, interaction.options.getInteger('minutes') ?? 30));
+    let data;
+    try { data = await fetchBestForWindow(mins, 10); }
+    catch { return interaction.editReply({ content: '❌ Could not fetch stock data. Try again shortly.' }); }
+    if (!data.items.length) return interaction.editReply({ content: `📭 No results found for a ${mins}m flight window.` });
+    return interaction.editReply({ embeds: [buildBestArrivalEmbed(data.flightMins, data.items, data.updatedAt)] });
   }
 
   if (cmd === 'myclaims') {
@@ -522,7 +539,6 @@ async function handleModal(interaction) {
       await member.setNickname(`${result.torn_name} [${result.torn_id}]`).catch(() => {});
       const verifiedRole = interaction.guild.roles.cache.get(VERIFIED_ROLE_ID);
       if (verifiedRole) await member.roles.add(verifiedRole);
-      // Also grant Verified Seller automatically
       const sellerRole = interaction.guild.roles.cache.get(VERIFIED_SELLER_ROLE_ID);
       if (sellerRole) await member.roles.add(sellerRole);
     } catch (e) { console.warn('[BOT] verify role/nick:', e.message); }
@@ -614,24 +630,17 @@ async function handleButton(interaction) {
       return interaction.editReply({ content: '❌ You need to `/verify` first before running a hospital check.' });
     }
 
-    await interaction.editReply({ content: '🔍 Checking hospital status for all targets... takes about 3 minutes.' });
+    await interaction.editReply({ content: '🔍 Checking hospital status for all targets... this takes ~3 minutes.' });
 
     const results = await checkHospitalStatus(keyRes.data.api_key);
     const embeds  = buildHospitalEmbeds(results, interaction.user.username);
 
-    const ch = await interaction.client.channels.fetch(LEVEL_LIST_CHANNEL_ID).catch(() => null);
-    if (!ch) return interaction.followUp({ content: '❌ Could not find the level list channel.', ephemeral: true });
+    await updateHospitalResults(interaction.client, embeds);
 
-    for (const embed of embeds) {
-      await ch.send({ embeds: [embed] });
-    }
-
-    return interaction.followUp({ content: `✅ Results posted above.`, ephemeral: true });
+    return interaction.editReply({ content: `✅ Results updated in <#1483273417653358785>.` });
   }
 
   if (id === 'open_verify_modal') {
-    // Show modal immediately — Discord requires showModal() to be called synchronously
-    // Already-verified check happens in the modal submit handler
     return interaction.showModal(modal('modal_verify', 'Enter Your Torn API Key',
       textInput('api_key', 'Your Torn API Key (Full Access)', { placeholder: 'Paste your Full Access key here', min: 16, max: 32 })
     ));

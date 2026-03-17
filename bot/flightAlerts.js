@@ -1,9 +1,16 @@
-// bot/flightAlerts.js
+// bot/flightAlerts.js — v3
+// Uses Nuttzar Stock Worker v3 API:
+//   /api/stocks  — full item list with pre-computed windows + opportunity scores
+//   /api/best    — best items for a specific flight window (/bestarrival command)
+// Prices come from the worker's built-in pricer (marketPrice field) — no Weav3r dependency.
+
 const axios = require('axios');
 
-const STOCK_URL  = 'https://nuttzar-stock-worker.notsilentclips.workers.dev/api/stocks';
-const WEAV3R_URL = 'https://weav3r.dev/api/marketplace';
+const WORKER_BASE = 'https://nuttzar-stock-worker.notsilentclips.workers.dev';
+const STOCK_URL   = `${WORKER_BASE}/api/stocks`;
+const BEST_URL    = `${WORKER_BASE}/api/best`;
 
+// ── Flight times by country + class (minutes) ──────────────────────────────
 const FLIGHT_MINS = {
   mex: { std:26,  airstrip:18,  wlt:13,  business:8  },
   cay: { std:35,  airstrip:25,  wlt:18,  business:11 },
@@ -30,185 +37,310 @@ const CC_NAMES = {
   swi:'Switzerland', jap:'Japan', chi:'China', uae:'UAE', sou:'South Africa',
 };
 
-// ── Weav3r price cache — individual TTL per item ───────────────────────────────
-const _priceCache = new Map(); // id -> { price, ts }
-const PRICE_TTL   = 5 * 60000;
+// Available window keys from the backend
+const WINDOWS = [15, 30, 45, 60, 90];
 
-async function getWeav3rPrice(itemId) {
-  const cached = _priceCache.get(itemId);
-  if (cached && Date.now() - cached.ts < PRICE_TTL) return cached.price;
-  try {
-    const res   = await axios.get(`${WEAV3R_URL}/${itemId}`, { timeout: 8000 });
-    const price = res.data?.lowest_price || res.data?.market_price || 0;
-    _priceCache.set(itemId, { price, ts: Date.now() });
-    return price;
-  } catch { return cached?.price || 0; }
-}
+// ── Display helpers ───────────────────────────────────────────────────────────
 
-// ── Confidence — based on restockSamples count ────────────────────────────────
-function restockConfidence({ avgRestockMins, restockSamples = 0 }) {
-  if (!avgRestockMins || avgRestockMins <= 0) return { label: '❓ Unknown', tier: 'unknown' };
-  if (restockSamples >= 10) return { label: '✅ Confident', tier: 'high',   lo: avgRestockMins * 0.75, hi: avgRestockMins * 1.25 };
-  if (restockSamples >= 4)  return { label: '🟡 Likely',    tier: 'medium', lo: avgRestockMins * 0.75, hi: avgRestockMins * 1.25 };
-  return                           { label: '⚠️ Unsure',    tier: 'low',    lo: avgRestockMins * 0.75, hi: avgRestockMins * 1.25 };
-}
-
-// ── Fetch + score all items ───────────────────────────────────────────────────
-async function fetchScoredItems() {
-  const res       = await axios.get(STOCK_URL, { timeout: 15000 });
-  const raw       = res.data?.items || [];
-  const updatedAt = res.data?.updatedAt || null;
-
-  // Batch Weav3r prices with concurrency limit
-  const uniqueIds = [...new Set(raw.map(i => i.id))];
-  for (let i = 0; i < uniqueIds.length; i += 10) {
-    await Promise.all(uniqueIds.slice(i, i + 10).map(id => getWeav3rPrice(id).catch(() => 0)));
-    if (i + 10 < uniqueIds.length) await new Promise(r => setTimeout(r, 200));
-  }
-
-  const inStock = [], predicted = [];
-
-  for (const item of raw) {
-    const flTable   = FLIGHT_MINS[item.country];
-    if (!flTable) continue;
-    const sellPrice = _priceCache.get(item.id)?.price || 0;
-    if (!sellPrice || !item.cost || sellPrice <= item.cost) continue;
-
-    const margin      = sellPrice - item.cost;
-    const pred        = item.prediction || {};
-    const profitPerHr = Math.round(margin / ((flTable.std * 2) / 60));
-
-    const base = {
-      id: item.id, name: item.name, country: item.country,
-      cost: item.cost, sellPrice, margin, profitPerHr,
-      stars: pred.stars, label: pred.label || '',
-      projected: pred.projected || 0,
-      restockEtaMs:   pred.restockEtaMs  || null,
-      depletionEtaMs: pred.depletionEtaMs || null,
-      avgRestockMins: item.avgRestockMins || null,
-      restockSamples: item.restockSamples || 0,
-      restockQty:     item.restockQty     || null,
-      confidence:     restockConfidence(item),
-    };
-
-    if (item.qty > 0 && (pred.stars || 0) >= 3) inStock.push({ ...base, qty: item.qty, inStock: true });
-    else if (item.qty === 0 && pred.restockEtaMs)  predicted.push({ ...base, qty: 0, inStock: false });
-  }
-
-  // Only show predicted items where leaving NOW gets you there in time for the restock
-  // Use std class as baseline for the channel embed — use user's actual class for DM alerts
-  const now = Date.now();
-  const filtered = predicted.filter(item => {
-    const stdMs = (FLIGHT_MINS[item.country]?.std || 120) * 60000;
-    const toRestock = item.restockEtaMs - now;
-    // Show if restock happens within 0..2x flight time (leave now → arrive before or just after restock)
-    return toRestock >= 0 && toRestock <= stdMs * 2;
-  });
-
-  inStock.sort((a, b)   => b.profitPerHr - a.profitPerHr);
-  filtered.sort((a, b)  => b.profitPerHr - a.profitPerHr);
-  predicted.sort((a, b) => b.profitPerHr - a.profitPerHr);
-  return { inStock: inStock.slice(0, 5), predicted: filtered.slice(0, 5), allPredicted: predicted.slice(0, 5), updatedAt };
-}
-
-// ── Formatters ────────────────────────────────────────────────────────────────
-const fmt    = n => `$${Number(n).toLocaleString()}`;
-const fmtEta = ms => {
-  if (!ms) return 'now';
-  const mins = Math.max(0, Math.round((ms - Date.now()) / 60000));
-  if (!mins) return 'now';
-  const h = Math.floor(mins / 60), m = mins % 60;
-  return h > 0 ? (m > 0 ? `~${h}h ${m}m` : `~${h}h`) : `~${mins}m`;
+// Backend returns snake_case marketState — map to clean label + icon
+const STATE_DISPLAY = {
+  stable:            { label: 'Stable',            icon: '➡️'  },
+  draining_slowly:   { label: 'Falling',           icon: '📉'  },
+  draining_fast:     { label: 'Draining Fast',     icon: '🚨'  },
+  near_sellout:      { label: 'Near Sellout',      icon: '⚠️'  },
+  dead:              { label: 'Dead',              icon: '💀'  },
+  refill_likely:     { label: 'Refill Likely',     icon: '🔄'  },
+  recently_refilled: { label: 'Recently Refilled', icon: '✅'  },
+  volatile:          { label: 'Volatile',          icon: '〽️' },
+  stale_data:        { label: 'Stale Data',        icon: '⏸️'  },
 };
 
-// ── Channel embed ─────────────────────────────────────────────────────────────
-function buildStockEmbed(inStock, predicted, updatedAt) {
-  const stockLines = inStock.length
-    ? inStock.map((item, i) =>
-        `**${i+1}.** ${CC_FLAGS[item.country]||'🌍'} **${item.name}** · ${item.qty.toLocaleString()} in stock\n` +
-        `　+${fmt(item.margin)}/unit · **${fmt(item.profitPerHr)}/hr** · ⭐${item.stars} ${item.label}`
-      ).join('\n')
-    : '_No quality stock right now_';
+function stateStr(marketState) {
+  const s = STATE_DISPLAY[marketState];
+  return s ? `${s.icon} ${s.label}` : '➡️ Stable';
+}
 
-  const predLines = predicted.length
-    ? predicted.map((item, i) => {
-        const flMs  = (FLIGHT_MINS[item.country]?.std || 120) * 60000;
-        const eta   = item.restockEtaMs - Date.now();
-        const inWin = eta >= 0 && eta <= flMs * 1.1;
-        const icon  = inWin ? '✈️' : '🔮';
-        const hint  = inWin ? ' **← leave now**' : '';
-        return `**${i+1}.** ${icon} ${CC_FLAGS[item.country]||'🌍'} **${item.name}** · restock ${fmtEta(item.restockEtaMs)}${hint}\n` +
-               `　+${fmt(item.margin)}/unit · **${fmt(item.profitPerHr)}/hr** · ${item.confidence.label}`;
-      }).join('\n')
-    : '_No predicted restocks matching current flight windows_';
+function confLabel(pct) {
+  if (pct == null) return '❓ Unknown';
+  if (pct >= 70)   return `🟢 High (${pct}%)`;
+  if (pct >= 40)   return `🟡 Medium (${pct}%)`;
+  return               `🔴 Low (${pct}%)`;
+}
 
-  const age    = updatedAt ? Math.round((Date.now() - updatedAt) / 60000) : null;
-  const ageStr = age == null ? '—' : age < 2 ? 'Fresh 🟢' : age < 10 ? `${age}m 🟡` : `${age}m 🔴`;
+function confShort(pct) {
+  if (pct == null) return '❓';
+  if (pct >= 70)   return `🟢${pct}%`;
+  if (pct >= 40)   return `🟡${pct}%`;
+  return               `🔴${pct}%`;
+}
+
+const STARS = ['⬛', '⭐', '⭐⭐', '⭐⭐⭐', '⭐⭐⭐⭐', '⭐⭐⭐⭐⭐'];
+const starStr = stars => STARS[Math.max(0, Math.min(5, stars ?? 0))];
+
+const fmt    = n  => `$${Number(n).toLocaleString()}`;
+const fmtQty = n  => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n));
+
+// Find the closest available window key to a real flight time
+function closestWindow(flightMins) {
+  return WINDOWS.reduce((best, w) =>
+    Math.abs(w - flightMins) < Math.abs(best - flightMins) ? w : best, 30);
+}
+
+// ── Core data fetcher ─────────────────────────────────────────────────────────
+
+/**
+ * Fetches the full item list from the v3 worker.
+ * Returns scored/split inStock and predicted arrays, plus raw data for alerts.
+ * Prices are embedded in marketPrice — no secondary fetch needed.
+ */
+async function fetchScoredItems() {
+  const res       = await axios.get(STOCK_URL, { timeout: 15000 });
+  const raw       = res.data?.items    || [];
+  const updatedAt = res.data?.updatedAt || null;
+
+  const inStock   = [];
+  const predicted = [];
+
+  for (const item of raw) {
+    const {
+      id, name, country, qty, cost,
+      marketPrice = 0, marketState, windows,
+      opportunity, confidence, sourceAgeMins,
+    } = item;
+
+    if (!FLIGHT_MINS[country]) continue;
+    if (!windows)              continue;
+
+    const w30 = windows[30];
+    if (!w30)  continue;
+
+    const base = {
+      id, name, country, qty, cost, marketPrice,
+      marketState:   marketState || 'stable',
+      windows,
+      opportunity:   opportunity || { score: 0, label: 'skip', stars: null },
+      confidence:    confidence  || 'low',
+      sourceAgeMins: sourceAgeMins || 0,
+      margin:        marketPrice > cost ? marketPrice - cost : 0,
+    };
+
+    if (qty > 0 && (w30.stars ?? 0) >= 3) {
+      inStock.push({ ...base, inStock: true });
+    } else if (qty === 0 && w30.refillChance >= 20) {
+      predicted.push({ ...base, inStock: false });
+    }
+  }
+
+  inStock.sort(  (a, b) => (b.opportunity.score ?? 0) - (a.opportunity.score ?? 0));
+  predicted.sort((a, b) => (b.windows[30]?.refillChance ?? 0) - (a.windows[30]?.refillChance ?? 0));
 
   return {
-    color: 0x5865F2, title: '✈️ Nuttzar Flight Intel',
+    inStock:   inStock.slice(0, 5),
+    predicted: predicted.slice(0, 5),
+    allRaw:    raw,
+    updatedAt,
+  };
+}
+
+/**
+ * Fetch best items for a specific flight window — used by /bestarrival command.
+ */
+async function fetchBestForWindow(flightMins, limit = 10) {
+  const valid = WINDOWS.includes(flightMins) ? flightMins : closestWindow(flightMins);
+  const res   = await axios.get(`${BEST_URL}?flight=${valid}&limit=${limit}`, { timeout: 10000 });
+  return {
+    flightMins: res.data?.flightMins ?? valid,
+    updatedAt:  res.data?.updatedAt  ?? null,
+    items:      res.data?.items      ?? [],
+  };
+}
+
+// ── Main channel embed ────────────────────────────────────────────────────────
+
+function buildStockEmbed(inStock, predicted, updatedAt) {
+  const age    = updatedAt ? Math.round((Date.now() - updatedAt) / 60000) : null;
+  const ageStr = age == null ? '—' : age < 2 ? 'Fresh 🟢' : age < 20 ? `${age}m 🟡` : `${age}m 🔴`;
+
+  // In-stock: show 30/60/90m windows + state + conf
+  const stockLines = inStock.length
+    ? inStock.map((item, i) => {
+        const flag  = CC_FLAGS[item.country] || '🌍';
+        const w30   = item.windows[30];
+        const w60   = item.windows[60];
+        const w90   = item.windows[90];
+        const conf  = confShort(w30?.confidencePct);
+        const score = item.opportunity.label ? ` · *${item.opportunity.label}*` : '';
+
+        const arrival = [
+          w30 ? `30m: ${starStr(w30.stars)} ~${fmtQty(w30.expectedStock)}` : null,
+          w60 ? `60m: ${starStr(w60.stars)} ~${fmtQty(w60.expectedStock)}` : null,
+          w90 ? `90m: ${starStr(w90.stars)} ~${fmtQty(w90.expectedStock)}` : null,
+        ].filter(Boolean).join(' · ');
+
+        return (
+          `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}**\n` +
+          `　${fmtQty(item.qty)} now · ${stateStr(item.marketState)}${score}\n` +
+          `　${arrival}\n` +
+          `　Conf: ${conf}` +
+          (item.margin > 0 ? ` · ${fmt(item.margin)}/unit` : '')
+        );
+      }).join('\n\n')
+    : '_No quality in-stock opportunities right now_';
+
+  // Predicted: show refill % per window
+  const predLines = predicted.length
+    ? predicted.map((item, i) => {
+        const flag  = CC_FLAGS[item.country] || '🌍';
+        const w30   = item.windows[30];
+        const w60   = item.windows[60];
+        const w90   = item.windows[90];
+        const conf  = confShort(w30?.confidencePct);
+
+        const refills = [
+          w30?.refillChance > 0 ? `30m: ${w30.refillChance}% → ~${fmtQty(w30.expectedStock)}` : null,
+          w60?.refillChance > 0 ? `60m: ${w60.refillChance}% → ~${fmtQty(w60.expectedStock)}` : null,
+          w90?.refillChance > 0 ? `90m: ${w90.refillChance}% → ~${fmtQty(w90.expectedStock)}` : null,
+        ].filter(Boolean).join(' · ');
+
+        return (
+          `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}** · *empty*\n` +
+          `　${stateStr(item.marketState)}\n` +
+          `　${refills || 'No refill data'}\n` +
+          `　Conf: ${conf}`
+        );
+      }).join('\n\n')
+    : '_No predicted restocks matching current windows_';
+
+  return {
+    color: 0x5865F2,
+    title: '✈️ Nuttzar Flight Intel',
     description:
-      '> ⚠️ *Predictions are estimates — always verify before travelling.*\n\n' +
-      'Profit/hr shown at **Standard** class · Use `/flightsetup` to configure',
+      '> ⚠️ *Predictions are estimates — always verify before travelling.*\n' +
+      '> Windows at **Standard** class · `/flightsetup` to personalise alerts',
     fields: [
-      { name: '📦 Top 5 In Stock',          value: stockLines, inline: false },
-      { name: '🔮 Top 5 Predicted Restocks', value: predLines,  inline: false },
+      { name: '📦 Top In-Stock Opportunities',        value: stockLines, inline: false },
+      { name: '🔮 Top Predicted Restocks (empty now)', value: predLines,  inline: false },
     ],
-    footer: { text: `Data age: ${ageStr} · Weav3r lowest listing · Refreshes every 5 mins` },
+    footer: { text: `Data age: ${ageStr} · v3 prediction engine · Refreshes every 15 mins` },
     timestamp: new Date().toISOString(),
   };
 }
 
-// ── Alert selection embed ─────────────────────────────────────────────────────
-function buildAlertSelectionEmbed(inStock, predicted, subscribedIds = []) {
-  const subSet = new Set(subscribedIds.map(String));
-  const fmtList = items => items.map((item, i) =>
-    `${subSet.has(String(item.id)) ? '🔔' : '🔕'} **${i+1}.** ${CC_FLAGS[item.country]||'🌍'} ${item.name} (${item.country.toUpperCase()})`
-  ).join('\n') || '_None_';
+// ── Best-for-arrival embed ─────────────────────────────────────────────────────
+
+function buildBestArrivalEmbed(flightMins, items, updatedAt) {
+  const age    = updatedAt ? Math.round((Date.now() - updatedAt) / 60000) : null;
+  const ageStr = age == null ? '—' : age < 2 ? 'Fresh 🟢' : age < 20 ? `${age}m 🟡` : `${age}m 🔴`;
+
+  const lines = items.length
+    ? items.slice(0, 10).map((item, i) => {
+        const flag   = CC_FLAGS[item.country] || '🌍';
+        const w      = item.window;
+        const margin = item.marketPrice > item.cost ? item.marketPrice - item.cost : 0;
+        return (
+          `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}**\n` +
+          `　${w ? `${starStr(w.stars)} ~${fmtQty(w.expectedStock)} on landing` : '_no data_'}` +
+          (w?.refillChance > 0 && w?.depletes ? ` · ${w.refillChance}% refill chance` : '') + `\n` +
+          `　${stateStr(item.marketState)}` +
+          (margin > 0 ? ` · ${fmt(margin)}/unit` : '') +
+          ` · Conf: ${confShort(w?.confidencePct)}`
+        );
+      }).join('\n\n')
+    : '_No results for this window_';
 
   return {
-    color: 0x57F287, title: '🔔 Flight Alert Subscriptions',
+    color: 0x57F287,
+    title: `✈️ Best Targets for ${flightMins}m Arrival`,
+    description: '> Ranked by expected stock on landing at this flight time',
+    fields: [{ name: `🏆 Top Options — ${flightMins}min Flight`, value: lines, inline: false }],
+    footer: { text: `Data age: ${ageStr}` },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+// ── Alert subscription selection embed ────────────────────────────────────────
+
+function buildAlertSelectionEmbed(inStock, predicted, subscribedIds = []) {
+  const subSet  = new Set(subscribedIds.map(String));
+  const fmtList = items => items.map((item, i) => {
+    const subbed = subSet.has(String(item.id));
+    const w30    = item.windows?.[30];
+    return (
+      `${subbed ? '🔔' : '🔕'} **${i+1}.** ${CC_FLAGS[item.country]||'🌍'} ${item.name} *(${item.country.toUpperCase()})*\n` +
+      `　${stateStr(item.marketState)}` +
+      (w30 ? ` · 30m: ${starStr(w30.stars)} ${confShort(w30.confidencePct)}` : '')
+    );
+  }).join('\n') || '_None_';
+
+  return {
+    color: 0x57F287,
+    title: '🔔 Flight Alert Subscriptions',
     description:
-      'Toggle alerts below. You\'ll be pinged when a restock ETA matches your flight time.\n\n' +
+      'Toggle alerts below. You\'ll be pinged when a window opens matching your flight time.\n\n' +
       '> ⚠️ *Predictions may be wrong — always verify before flying.*\n\n' +
       '🔔 = subscribed · 🔕 = not subscribed',
     fields: [
       { name: '📦 In Stock',          value: fmtList(inStock),   inline: true },
       { name: '🔮 Predicted Restock', value: fmtList(predicted), inline: true },
     ],
-    footer: { text: 'Run /flightsetup to set travel class & capacity' },
+    footer: { text: '/flightsetup to set travel class & carry capacity' },
   };
 }
 
-// ── Alert ping embed ──────────────────────────────────────────────────────────
+// ── Alert DM / channel ping embed ─────────────────────────────────────────────
+
 function buildAlertEmbed(item, flightMins, travelClass, capacity) {
-  const cap     = Math.min(capacity || 10, 35);
-  const qty     = Math.min(item.projected || item.restockQty || 500, cap);
-  const total   = Math.round(qty * item.margin);
-  const perHr   = Math.round(total / ((flightMins * 2) / 60));
-  const clsLbl  = { std:'Standard', airstrip:'Airstrip', wlt:'WLT', business:'Business' }[travelClass] || 'Standard';
+  const cap    = Math.min(capacity || 10, 35);
+  const clsLbl = { std:'Standard', airstrip:'Airstrip', wlt:'WLT', business:'Business' }[travelClass] || 'Standard';
+  const flag   = CC_FLAGS[item.country] || '🌍';
+  const wKey   = closestWindow(flightMins);
+  const w      = item.windows?.[wKey];
+  const margin = item.marketPrice > item.cost ? item.marketPrice - item.cost : 0;
+  const estQty   = Math.min(w?.expectedStock ?? 0, cap);
+  const estTotal = margin > 0 ? Math.round(estQty * margin) : null;
+
+  const isUrgent = item.qty > 0 && w?.depletes;
+
+  const fields = [
+    { name: '📍 Destination',  value: `${flag} ${CC_NAMES[item.country]||item.country}`, inline: true },
+    { name: '⏱️ Your Flight',  value: `~${flightMins}m (${clsLbl})`,                     inline: true },
+    { name: '📦 Stock Now',    value: item.qty > 0 ? fmtQty(item.qty) : 'Empty',         inline: true },
+    { name: '📈 Trend',        value: stateStr(item.marketState),                        inline: true },
+    { name: '🛬 On Landing',   value: w ? `${starStr(w.stars)} ~${fmtQty(w.expectedStock)}` : 'Unknown', inline: true },
+    { name: '🎯 Confidence',   value: confLabel(w?.confidencePct),                       inline: true },
+  ];
+
+  if (item.qty === 0 && (w?.refillChance ?? 0) > 0) {
+    fields.push({ name: '🔄 Refill Chance', value: `${w.refillChance}% by ${wKey}m`, inline: true });
+  }
+  if (margin > 0) {
+    fields.push({ name: '💰 Margin/unit',    value: fmt(margin),    inline: true });
+  }
+  if (estTotal && estTotal > 0) {
+    fields.push({ name: '💵 Est. trip value', value: fmt(estTotal), inline: true });
+  }
 
   return {
-    color: 0xFEE75C,
-    title: `✈️ Leave Now! ${CC_FLAGS[item.country]||'🌍'} ${CC_NAMES[item.country]||item.country}`,
-    description:
-      `**${item.name}** restock window matches your flight time.\n\n` +
-      `> ${item.confidence.label} · ${item.restockSamples} restock samples`,
-    fields: [
-      { name: '⏱️ Flight',      value: `${flightMins}m (${clsLbl})`, inline: true },
-      { name: '💰 Margin/unit', value: fmt(item.margin),             inline: true },
-      { name: '📦 Est. qty',    value: `~${qty} (cap ${cap})`,       inline: true },
-      { name: '💵 Est. total',  value: fmt(total),                   inline: true },
-      { name: '📈 Est. $/hr',   value: fmt(perHr),                   inline: true },
-      { name: '🕐 Restock ETA', value: item.restockEtaMs
-          ? `<t:${Math.floor(item.restockEtaMs / 1000)}:R>` : '~now', inline: true },
-    ],
-    footer: { text: 'Nuttzar Flight Alerts · Predictions may be inaccurate' },
+    color: isUrgent ? 0xE74C3C : 0xFEE75C,
+    title: isUrgent
+      ? `⚠️ Leave Now — ${item.name} is depleting!`
+      : `✈️ Flight Window Open — ${item.name}`,
+    description: `${flag} **${CC_NAMES[item.country]||item.country}**\n`,
+    fields,
+    footer: { text: 'Nuttzar Flight Alerts · Always verify before flying' },
     timestamp: new Date().toISOString(),
   };
 }
 
 module.exports = {
-  fetchScoredItems, buildStockEmbed, buildAlertSelectionEmbed, buildAlertEmbed,
-  restockConfidence, FLIGHT_MINS, CC_FLAGS, CC_NAMES,
+  fetchScoredItems,
+  fetchBestForWindow,
+  buildStockEmbed,
+  buildBestArrivalEmbed,
+  buildAlertSelectionEmbed,
+  buildAlertEmbed,
+  FLIGHT_MINS,
+  CC_FLAGS,
+  CC_NAMES,
+  closestWindow,
 };

@@ -14,7 +14,7 @@ const {
 } = require('./embeds');
 const {
   fetchScoredItems, fetchBestForWindow,
-  buildInStockEmbed, buildPredictedEmbed, buildBestArrivalEmbed,
+  buildCountrySummaryEmbed, buildInStockEmbed, buildPredictedEmbed, buildBestArrivalEmbed,
   buildAlertSelectionEmbed, buildAlertEmbed,
   FLIGHT_MINS, closestWindow,
 } = require('./flightAlerts');
@@ -47,7 +47,8 @@ const placeholderMessages = new Map();
 const notifiedPayouts     = new Set();
 const notifiedAlerts      = new Map();
 
-let flightInStockMsgId = null;
+let flightCountryMsgId   = null;
+let flightInStockMsgId   = null;
 let flightPredictedMsgId = null;
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -138,40 +139,42 @@ async function postBecomeSeller() {
   } catch (e) { console.error('[BOT] postBecomeSeller:', e.message); }
 }
 
-// ── Flight intel embeds (two messages: in-stock + predicted) ─────────────────
+// ── Flight intel embeds (3 messages: country summary, in-stock, predicted) ────
 async function refreshFlightEmbed() {
   try {
     const ch = await client.channels.fetch(CHANNEL_IDS.flight).catch(() => null);
     if (!ch) return;
-    const { inStock, predicted, updatedAt } = await fetchScoredItems();
+    const { inStock, predicted, allRaw, updatedAt } = await fetchScoredItems();
 
-    const stockEmbed = buildInStockEmbed(inStock, updatedAt);
-    const predEmbed  = buildPredictedEmbed(predicted, updatedAt);
-    const btns = row(
-      btn('toggle_flyer_role', '\U0001f514 Get Flight Alerts'),
-      btn('open_flight_setup', '\u2699\ufe0f Set Class & Capacity')
-    );
+    const countryEmbed = buildCountrySummaryEmbed(allRaw, updatedAt);
+    const stockEmbed   = buildInStockEmbed(inStock, updatedAt);
+    const predEmbed    = buildPredictedEmbed(predicted, updatedAt);
 
-    // Try to edit both existing messages
-    if (flightInStockMsgId && flightPredictedMsgId) {
+    // Try to edit all three existing messages
+    if (flightCountryMsgId && flightInStockMsgId && flightPredictedMsgId) {
       try {
-        const m1 = await ch.messages.fetch(flightInStockMsgId);
-        const m2 = await ch.messages.fetch(flightPredictedMsgId);
-        await m1.edit({ embeds: [stockEmbed] });
-        await m2.edit({ embeds: [predEmbed], components: [btns] });
+        const m1 = await ch.messages.fetch(flightCountryMsgId);
+        const m2 = await ch.messages.fetch(flightInStockMsgId);
+        const m3 = await ch.messages.fetch(flightPredictedMsgId);
+        await m1.edit({ embeds: [countryEmbed] });
+        await m2.edit({ embeds: [stockEmbed] });
+        await m3.edit({ embeds: [predEmbed] });
         return;
       } catch {
+        flightCountryMsgId   = null;
         flightInStockMsgId   = null;
         flightPredictedMsgId = null;
       }
     }
 
-    // Post fresh — purge old bot messages first
+    // Post fresh — purge then send all three, no buttons
     await purgeChannel(CHANNEL_IDS.flight);
-    const m1 = await ch.send({ embeds: [stockEmbed] });
-    const m2 = await ch.send({ embeds: [predEmbed], components: [btns] });
-    flightInStockMsgId   = m1.id;
-    flightPredictedMsgId = m2.id;
+    const m1 = await ch.send({ embeds: [countryEmbed] });
+    const m2 = await ch.send({ embeds: [stockEmbed] });
+    const m3 = await ch.send({ embeds: [predEmbed] });
+    flightCountryMsgId   = m1.id;
+    flightInStockMsgId   = m2.id;
+    flightPredictedMsgId = m3.id;
   } catch (e) { console.error('[BOT] refreshFlightEmbed:', e.message); }
 }
 
@@ -421,6 +424,64 @@ async function handleSlash(interaction) {
     catch { return interaction.editReply({ content: '❌ Could not fetch stock data. Try again shortly.' }); }
     if (!data.items.length) return interaction.editReply({ content: `📭 No results found for a ${mins}m flight window.` });
     return interaction.editReply({ embeds: [buildBestArrivalEmbed(data.flightMins, data.items, data.updatedAt)] });
+  }
+
+  if (cmd === 'xanax') {
+    await interaction.deferReply({ ephemeral: true });
+    let allRaw;
+    try { ({ allRaw } = await fetchScoredItems()); }
+    catch { return interaction.editReply({ content: '❌ Could not fetch stock data. Try again shortly.' }); }
+
+    const now = Date.now();
+    const xanaxItems = allRaw
+      .filter(i => i.name?.toLowerCase().includes('xanax') && FLIGHT_MINS[i.country])
+      .sort((a, b) => (b.opportunity?.score ?? 0) - (a.opportunity?.score ?? 0));
+
+    if (!xanaxItems.length) return interaction.editReply({ content: '📭 No Xanax data available right now.' });
+
+    const lines = xanaxItems.map(item => {
+      const flag      = CC_FLAGS[item.country] || '🌍';
+      const pilotMins = FLIGHT_MINS[item.country]?.airstrip ?? '?';
+      const landTct   = typeof pilotMins === 'number'
+        ? new Date(now + pilotMins * 60000).toUTCString().match(/(\d{2}:\d{2})/)?.[1] || '?'
+        : '?';
+
+      if (item.qty > 0) {
+        const minsLeft = item.burnRate > 0 ? Math.round(item.qty / item.burnRate) : null;
+        const h = minsLeft != null ? Math.floor(minsLeft / 60) : null;
+        const m = minsLeft != null ? minsLeft % 60 : null;
+        const depStr = minsLeft != null
+          ? `📉 ${h > 0 ? `${h}h ${m}m` : `${m}m`} left`
+          : '📉 Rate unknown';
+        return `${flag} **${CC_NAMES[item.country]||item.country}** · ${item.qty.toLocaleString()} in stock\n　${depStr} · ✈️ ${pilotMins}m → land ~${landTct} TCT`;
+      } else {
+        let restockStr = 'No restock history';
+        if (item.lastEmptyAt && item.avgRestockMins) {
+          const etaMs = item.lastEmptyAt + item.avgRestockMins * 60000;
+          const tct   = new Date(etaMs).toUTCString().match(/(\d{2}:\d{2})/)?.[1] || '?';
+          const away  = Math.round((etaMs - now) / 60000);
+          restockStr  = away <= 0 ? `⚡ Overdue (~${tct} TCT)` : `⏰ ~${tct} TCT (in ${away}m)`;
+        }
+        return `${flag} **${CC_NAMES[item.country]||item.country}** · *empty*\n　${restockStr} · ✈️ ${pilotMins}m → land ~${landTct} TCT`;
+      }
+    }).join('\n\n');
+
+    try {
+      const user = await interaction.user.createDM();
+      await user.send({
+        embeds: [{
+          color: 0xF1C40F,
+          title: '💊 Xanax — All Countries',
+          description: '> Private pilot times · In-stock shows depletion · Empty shows restock ETA',
+          fields: [{ name: '📊 Current Status', value: lines }],
+          footer: { text: 'Nuttzar Flight Intel · Always verify before flying' },
+          timestamp: new Date().toISOString(),
+        }],
+      });
+      return interaction.editReply({ content: '✅ Xanax flight data sent to your DMs!' });
+    } catch {
+      return interaction.editReply({ content: '❌ Could not DM you — make sure your DMs are open.' });
+    }
   }
 
   if (cmd === 'myclaims') {

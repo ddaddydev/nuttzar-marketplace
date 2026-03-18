@@ -73,6 +73,16 @@ const embeds = [
         inline: false,
       },
       {
+        name: '💊 /xanax',
+        value: 'Get a DM showing Xanax stock status across every country — current quantity with depletion time if in stock, or predicted restock ETA if empty. Uses private pilot flight times.',
+        inline: false,
+      },
+      {
+        name: '🏆 /bestarrival',
+        value: 'Enter your flight time in minutes and get a ranked list of the best items likely to still be in stock when you land.',
+        inline: false,
+      },
+      {
         name: '🏥 /checkhospital',
         value: 'Runs a live check on all Baldr levelling targets using your API key and posts results here — showing who\'s in hospital and when they\'re out. Takes about 3 minutes.',
         inline: false,
@@ -91,7 +101,12 @@ const embeds = [
       },
       {
         name: '✈️ Flight Intel',
-        value: 'Live foreign stock levels with Weav3r pricing and restock predictions. Items you can make it to in time are highlighted.',
+        value:
+          'Three live embeds updated every 15 minutes:\n' +
+          '• **Top 3 Countries** — ranked by average opportunity score across all items, with private pilot flight times\n' +
+          '• **In Stock Now** — top opportunities currently available, showing quantity, market state, and exactly when stock depletes in TCT\n' +
+          '• **Predicted Restocks** — empty items with ✅/❌ showing whether they restock before or after you land by private pilot\n\n' +
+          'Use `/xanax` to get Xanax-specific data sent straight to your DMs.',
         inline: false,
       },
       {

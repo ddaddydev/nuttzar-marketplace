@@ -230,15 +230,24 @@ function buildInStockEmbed(inStock, updatedAt) {
           depletionStr = `~${timeStr} left · empty ~${depleteTct} TCT`;
         }
 
-        // Private pilot flight time for context
+        // Profit/hr: margin * burn rate (units sold per min) * 60
+        let profitHr = null;
+        if (item.burnRate > 0 && item.margin > 0) {
+          profitHr = Math.round(item.margin * item.burnRate * 60);
+        }
+
+        // Cost breakdown
+        const costPer  = item.cost > 0 ? fmt(item.cost) : '?';
+        const cost29   = item.cost > 0 ? fmt(item.cost * 29) : '?';
         const pilotMins = FLIGHT_MINS[item.country]?.airstrip ?? '?';
 
         return (
           `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}**\n` +
           `　${fmtQty(item.qty)} in stock · ${stateStr(item.marketState)}${score}\n` +
           `　📉 Depletes: ${depletionStr}\n` +
-          `　✈️ Private pilot: ${pilotMins}m · Conf: ${conf}` +
-          (item.margin > 0 ? ` · ${fmt(item.margin)}/unit` : '')
+          `　💰 ${fmt(item.margin)}/unit · 29× costs **${cost29}** (${costPer} each)` +
+          (profitHr ? ` · ~${fmt(profitHr)}/hr` : '') + `\n` +
+          `　✈️ ${pilotMins}m private pilot · Conf: ${conf}`
         );
       }).join('\n\n')
     : '_No quality in-stock opportunities right now_';
@@ -246,7 +255,7 @@ function buildInStockEmbed(inStock, updatedAt) {
   return {
     color: 0x5865F2,
     title: '📦 Top In-Stock Opportunities',
-    description: '> Ranked by opportunity score · Use `/xanax` for Xanax-only DM',
+    description: '> Ranked by profit per unit · Use `/xanax` for Xanax-only DM',
     fields: [{ name: '📦 In Stock Now', value: stockLines, inline: false }],
     footer: { text: `Data age: ${ageStr} · Refreshes every 15 mins` },
     timestamp: new Date().toISOString(),

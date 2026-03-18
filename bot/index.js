@@ -169,12 +169,18 @@ async function refreshFlightEmbed() {
 
     // Post fresh — purge then send all three, no buttons
     await purgeChannel(CHANNEL_IDS.flight);
-    const m1 = await ch.send({ embeds: [countryEmbed] });
-    const m2 = await ch.send({ embeds: [stockEmbed] });
-    const m3 = await ch.send({ embeds: [predEmbed] });
-    flightCountryMsgId   = m1.id;
-    flightInStockMsgId   = m2.id;
-    flightPredictedMsgId = m3.id;
+    try {
+      const m1 = await ch.send({ embeds: [countryEmbed] });
+      flightCountryMsgId = m1.id;
+    } catch (e) { console.error('[BOT] flight m1 send:', e.message); }
+    try {
+      const m2 = await ch.send({ embeds: [stockEmbed] });
+      flightInStockMsgId = m2.id;
+    } catch (e) { console.error('[BOT] flight m2 send:', e.message); }
+    try {
+      const m3 = await ch.send({ embeds: [predEmbed] });
+      flightPredictedMsgId = m3.id;
+    } catch (e) { console.error('[BOT] flight m3 send:', e.message); }
   } catch (e) { console.error('[BOT] refreshFlightEmbed:', e.message); }
 }
 

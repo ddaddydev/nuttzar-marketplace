@@ -114,22 +114,24 @@ async function fetchScoredItems() {
     const w30 = windows[30];
     if (!w30)  continue;
 
+    const opp = opportunity || { score: 0, label: '', stars: 0 };
+
     const base = {
       id, name, country, qty, cost, marketPrice,
-      marketState:   marketState || 'stable',
+      marketState:    marketState || 'stable',
       windows,
-      opportunity:   opportunity || { score: 0, label: 'skip', stars: null },
-      confidence:    confidence  || 'low',
-      sourceAgeMins: sourceAgeMins || 0,
-      margin:        marketPrice > cost ? marketPrice - cost : 0,
-      lastEmptyAt:   item.lastEmptyAt    ?? null,
+      opportunity:    opp,
+      confidence:     confidence  || 'low',
+      sourceAgeMins:  sourceAgeMins || 0,
+      margin:         marketPrice > cost ? marketPrice - cost : 0,
+      lastEmptyAt:    item.lastEmptyAt    ?? null,
       avgRestockMins: item.avgRestockMins ?? null,
-      burnRate:      item.burnRate        ?? null,
+      burnRate:       item.burnRate       ?? null,
     };
 
     if (qty > 0 && (w30.stars ?? 0) >= 3) {
       inStock.push({ ...base, inStock: true });
-    } else if (qty === 0 && w30.refillChance >= 20) {
+    } else if (qty === 0 && (w30.refillChance ?? 0) >= 20) {
       predicted.push({ ...base, inStock: false });
     }
   }

@@ -1,17 +1,17 @@
 // bot/flightAlerts.js — v3
-// Uses Nuttzar Stock Worker v3 API:
-//   /api/stocks  — full item list with pre-computed windows + opportunity scores
-//   /api/best    — best items for a specific flight window (/bestarrival command)
-// Prices come from Weav3r /marketplace API (lowest_price → sell price for margin calc).
-// Weav3r is called once per refresh (1 call per 15 min) — well within 100 calls/min limit.
+// Stock data: Nuttzar Stock Worker v3 (/api/stocks, /api/best)
+// Prices:     Weav3r /marketplace — lowest_price as sell price (1 call per 15min refresh)
+// Margin:     Weav3r lowest_price - foreign store cost
+// Profit/hr:  (margin × 29 items) / (airstrip round trip hours)
 
 const axios = require('axios');
 
-const WORKER_BASE = 'https://nuttzar-stock-worker.notsilentclips.workers.dev';
-const STOCK_URL   = `${WORKER_BASE}/api/stocks`;
-const BEST_URL    = `${WORKER_BASE}/api/best`;
+const WORKER_BASE       = 'https://nuttzar-stock-worker.notsilentclips.workers.dev';
+const STOCK_URL         = `${WORKER_BASE}/api/stocks`;
+const BEST_URL          = `${WORKER_BASE}/api/best`;
+const WEAV3R_MARKET_URL = 'https://weav3r.dev/api/marketplace';
 
-// ── Flight times by country + class (minutes) ──────────────────────────────
+// ── Flight times by country + class (minutes) ─────────────────────────────────
 const FLIGHT_MINS = {
   mex: { std:26,  airstrip:18,  wlt:13,  business:8  },
   cay: { std:35,  airstrip:25,  wlt:18,  business:11 },
@@ -38,12 +38,10 @@ const CC_NAMES = {
   swi:'Switzerland', jap:'Japan', chi:'China', uae:'UAE', sou:'South Africa',
 };
 
-// Available window keys from the backend
 const WINDOWS = [15, 30, 45, 60, 90];
 
 // ── Display helpers ───────────────────────────────────────────────────────────
 
-// Backend returns snake_case marketState — map to clean label + icon
 const STATE_DISPLAY = {
   stable:            { label: 'Stable',            icon: '➡️'  },
   draining_slowly:   { label: 'Falling',           icon: '📉'  },
@@ -56,47 +54,62 @@ const STATE_DISPLAY = {
   stale_data:        { label: 'Stale Data',        icon: '⏸️'  },
 };
 
-function stateStr(marketState) {
-  const s = STATE_DISPLAY[marketState];
-  return s ? `${s.icon} ${s.label}` : '➡️ Stable';
+function stateStr(s) {
+  const d = STATE_DISPLAY[s];
+  return d ? `${d.icon} ${d.label}` : '➡️ Stable';
 }
 
 function confLabel(pct) {
   if (pct == null) return '❓ Unknown';
   if (pct >= 70)   return `🟢 High (${pct}%)`;
   if (pct >= 40)   return `🟡 Medium (${pct}%)`;
-  return               `🔴 Low (${pct}%)`;
+  return                  `🔴 Low (${pct}%)`;
 }
 
 function confShort(pct) {
   if (pct == null) return '❓';
   if (pct >= 70)   return `🟢${pct}%`;
   if (pct >= 40)   return `🟡${pct}%`;
-  return               `🔴${pct}%`;
+  return                  `🔴${pct}%`;
 }
 
-const STARS = ['⬛', '⭐', '⭐⭐', '⭐⭐⭐', '⭐⭐⭐⭐', '⭐⭐⭐⭐⭐'];
-const starStr = stars => STARS[Math.max(0, Math.min(5, stars ?? 0))];
+const STARS  = ['⬛','⭐','⭐⭐','⭐⭐⭐','⭐⭐⭐⭐','⭐⭐⭐⭐⭐'];
+const starStr = s => STARS[Math.max(0, Math.min(5, s ?? 0))];
 
-const fmt    = n  => `$${Number(n).toLocaleString()}`;
-const fmtQty = n  => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n));
+const fmt    = n => `$${Number(n).toLocaleString()}`;
+const fmtQty = n => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n));
 
-// Find the closest available window key to a real flight time
-function closestWindow(flightMins) {
+function closestWindow(mins) {
   return WINDOWS.reduce((best, w) =>
-    Math.abs(w - flightMins) < Math.abs(best - flightMins) ? w : best, 30);
+    Math.abs(w - mins) < Math.abs(best - mins) ? w : best, 30);
 }
 
-const WEAV3R_MARKET_URL = 'https://weav3r.dev/api/marketplace';
+// profit/hr = (margin × 29) / round-trip hours
+// round trip = airstrip flight × 2 (there and back)
+function profitPerHour(margin, airstripMins) {
+  if (!margin || margin <= 0 || !airstripMins) return null;
+  const roundTripHours = (airstripMins * 2) / 60;
+  return Math.round((margin * 29) / roundTripHours);
+}
+
+function tripLines(item) {
+  const pilot = FLIGHT_MINS[item.country]?.airstrip ?? null;
+  if (!item.margin || item.margin <= 0) return null;
+  const costPer  = item.cost        > 0 ? fmt(item.cost)           : '?';
+  const sellPer  = item.marketPrice > 0 ? fmt(item.marketPrice)    : '?';
+  const cost29   = item.cost        > 0 ? fmt(item.cost * 29)      : '?';
+  const tripProfit = item.margin * 29;
+  const phr      = profitPerHour(item.margin, pilot);
+  return (
+    `　💰 Buy ${costPer} → Sell ${sellPer} · **${fmt(item.margin)}/unit**\n` +
+    `　🧳 29× costs **${cost29}** · Trip profit: **${fmt(tripProfit)}**` +
+    (phr ? ` · **${fmt(phr)}/hr**` : '')
+  );
+}
 
 // ── Core data fetcher ─────────────────────────────────────────────────────────
 
-/**
- * Fetches the full item list from the v3 worker + Weav3r market prices.
- * Uses Weav3r lowest_price as the sell price for margin calculation.
- */
 async function fetchScoredItems() {
-  // Fetch worker data and Weav3r prices in parallel
   const [workerRes, weav3rRes] = await Promise.all([
     axios.get(STOCK_URL, { timeout: 15000 }),
     axios.get(WEAV3R_MARKET_URL, { timeout: 15000 }).catch(() => null),
@@ -105,11 +118,11 @@ async function fetchScoredItems() {
   const raw       = workerRes.data?.items    || [];
   const updatedAt = workerRes.data?.updatedAt || null;
 
-  // Build lookup: item_id → lowest_price (fall back to market_price)
+  // item_id → lowest_price ?? market_price
   const priceMap = {};
   if (weav3rRes?.data?.items) {
     for (const w of weav3rRes.data.items) {
-      priceMap[w.item_id] = w.lowest_price || w.market_price || 0;
+      priceMap[String(w.item_id)] = w.lowest_price || w.market_price || 0;
     }
   }
 
@@ -117,11 +130,7 @@ async function fetchScoredItems() {
   const predicted = [];
 
   for (const item of raw) {
-    const {
-      id, name, country, qty, cost,
-      marketState, windows,
-      opportunity, confidence, sourceAgeMins,
-    } = item;
+    const { id, name, country, qty, cost, marketState, windows, opportunity, confidence, sourceAgeMins } = item;
 
     if (!FLIGHT_MINS[country]) continue;
     if (!windows)              continue;
@@ -129,9 +138,9 @@ async function fetchScoredItems() {
     const w30 = windows[30];
     if (!w30)  continue;
 
-    const opp        = opportunity || { score: 0, label: '', stars: 0 };
-    const sellPrice  = priceMap[id] || 0;
-    const margin     = sellPrice > cost ? sellPrice - cost : 0;
+    const opp       = opportunity || { score: 0, label: '', stars: 0 };
+    const sellPrice = priceMap[String(id)] || 0;
+    const margin    = sellPrice > cost ? sellPrice - cost : 0;
 
     const base = {
       id, name, country, qty, cost,
@@ -139,7 +148,7 @@ async function fetchScoredItems() {
       marketState:    marketState || 'stable',
       windows,
       opportunity:    opp,
-      confidence:     confidence  || 'low',
+      confidence:     confidence    || 'low',
       sourceAgeMins:  sourceAgeMins || 0,
       margin,
       lastEmptyAt:    item.lastEmptyAt    ?? null,
@@ -154,11 +163,14 @@ async function fetchScoredItems() {
     }
   }
 
-  inStock.sort(  (a, b) => (b.margin ?? 0) - (a.margin ?? 0));
+  // Sort by margin descending
+  inStock.sort((a, b) => (b.margin ?? 0) - (a.margin ?? 0));
+
+  // Sort predicted: expected stock on landing at airstrip window, then margin
   predicted.sort((a, b) => {
-    const aWin = a.windows[closestWindow(FLIGHT_MINS[a.country]?.airstrip ?? 30)]?.expectedStock ?? 0;
-    const bWin = b.windows[closestWindow(FLIGHT_MINS[b.country]?.airstrip ?? 30)]?.expectedStock ?? 0;
-    if (bWin !== aWin) return bWin - aWin;
+    const aW = a.windows[closestWindow(FLIGHT_MINS[a.country]?.airstrip ?? 30)]?.expectedStock ?? 0;
+    const bW = b.windows[closestWindow(FLIGHT_MINS[b.country]?.airstrip ?? 30)]?.expectedStock ?? 0;
+    if (bW !== aW) return bW - aW;
     return (b.margin ?? 0) - (a.margin ?? 0);
   });
 
@@ -170,9 +182,6 @@ async function fetchScoredItems() {
   };
 }
 
-/**
- * Fetch best items for a specific flight window — used by /bestarrival command.
- */
 async function fetchBestForWindow(flightMins, limit = 10) {
   const valid = WINDOWS.includes(flightMins) ? flightMins : closestWindow(flightMins);
   const res   = await axios.get(`${BEST_URL}?flight=${valid}&limit=${limit}`, { timeout: 10000 });
@@ -183,13 +192,12 @@ async function fetchBestForWindow(flightMins, limit = 10) {
   };
 }
 
-// ── Country profit summary embed (message 1 — permanent top) ─────────────────
+// ── Country summary embed (message 1) ────────────────────────────────────────
 
 function buildCountrySummaryEmbed(allRaw, updatedAt) {
   const age    = updatedAt ? Math.round((Date.now() - updatedAt) / 60000) : null;
   const ageStr = age == null ? '—' : age < 2 ? 'Fresh 🟢' : age < 20 ? `${age}m 🟡` : `${age}m 🔴`;
 
-  // Group items by country, compute avg opportunity score + count of good items
   const byCountry = {};
   for (const item of allRaw) {
     if (!FLIGHT_MINS[item.country]) continue;
@@ -202,9 +210,9 @@ function buildCountrySummaryEmbed(allRaw, updatedAt) {
   const ranked = Object.entries(byCountry)
     .map(([cc, d]) => ({
       cc,
-      avg: Math.round(d.scores.reduce((s, v) => s + v, 0) / d.scores.length),
+      avg:       Math.round(d.scores.reduce((s, v) => s + v, 0) / d.scores.length),
       goodCount: d.goodCount,
-      total: d.scores.length,
+      total:     d.scores.length,
     }))
     .sort((a, b) => b.avg - a.avg)
     .slice(0, 3);
@@ -213,7 +221,7 @@ function buildCountrySummaryEmbed(allRaw, updatedAt) {
   const lines = ranked.map((c, i) =>
     `${medals[i]} **${CC_FLAGS[c.cc]||'🌍'} ${CC_NAMES[c.cc]||c.cc}**\n` +
     `　Avg score: **${c.avg}/100** · ${c.goodCount} good opportunities (of ${c.total} items)\n` +
-    `　✈️ Private pilot: **${FLIGHT_MINS[c.cc]?.airstrip ?? '?'}m**`
+    `　✈️ Private pilot: **${FLIGHT_MINS[c.cc]?.airstrip ?? '?'}m** · Round trip: **${(FLIGHT_MINS[c.cc]?.airstrip ?? 0) * 2}m**`
   ).join('\n\n');
 
   return {
@@ -234,38 +242,29 @@ function buildInStockEmbed(inStock, updatedAt) {
 
   const stockLines = inStock.length
     ? inStock.map((item, i) => {
-        const flag  = CC_FLAGS[item.country] || '🌍';
-        const conf  = confShort(item.windows[30]?.confidencePct);
-        const score = item.opportunity.label ? ` · *${item.opportunity.label}*` : '';
+        const flag      = CC_FLAGS[item.country] || '🌍';
+        const conf      = confShort(item.windows[30]?.confidencePct);
+        const score     = item.opportunity.label ? ` · *${item.opportunity.label}*` : '';
+        const pilot     = FLIGHT_MINS[item.country]?.airstrip ?? '?';
 
-        // Depletion time based on burn rate
+        // Depletion time
         let depletionStr = 'Rate unknown';
         if (item.burnRate && item.burnRate > 0) {
           const minsLeft   = Math.round(item.qty / item.burnRate);
-          const h          = Math.floor(minsLeft / 60), m = minsLeft % 60;
+          const h = Math.floor(minsLeft / 60), m = minsLeft % 60;
           const timeStr    = h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
           const depleteTct = new Date(Date.now() + minsLeft * 60000).toUTCString().match(/(\d{2}:\d{2})/)?.[1] || '?';
           depletionStr = `~${timeStr} left · empty ~${depleteTct} TCT`;
         }
 
-        // Profit/hr: margin * burn rate (units sold per min) * 60
-        let profitHrStr = 'N/A';
-        if (item.burnRate != null && item.burnRate > 0 && item.margin > 0) {
-          profitHrStr = `~${fmt(Math.round(item.margin * item.burnRate * 60))}/hr`;
-        }
-
-        // Cost breakdown
-        const costPer = item.cost > 0 ? fmt(item.cost) : '?';
-        const sellPer = item.marketPrice > 0 ? fmt(item.marketPrice) : '?';
-        const cost29  = item.cost > 0 ? fmt(item.cost * 29) : '?';
-        const pilotMins = FLIGHT_MINS[item.country]?.airstrip ?? '?';
+        const profit = tripLines(item);
 
         return (
           `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}**\n` +
           `　${fmtQty(item.qty)} in stock · ${stateStr(item.marketState)}${score}\n` +
           `　📉 Depletes: ${depletionStr}\n` +
-          `　💰 Buy ${costPer} → Sell ${sellPer} · ${fmt(item.margin)}/unit · ${profitHrStr}\n` +
-          `　🧳 29× costs **${cost29}** · ✈️ ${pilotMins}m private pilot · Conf: ${conf}`
+          (profit ? `${profit}\n` : '') +
+          `　✈️ ${pilot}m private pilot · Round trip: ${typeof pilot === 'number' ? pilot * 2 : '?'}m · Conf: ${conf}`
         );
       }).join('\n\n')
     : '_No quality in-stock opportunities right now_';
@@ -280,7 +279,7 @@ function buildInStockEmbed(inStock, updatedAt) {
   };
 }
 
-// ── Predicted embed (message 3) ───────────────────────────────────────────────
+// ── Predicted restocks embed (message 3) ─────────────────────────────────────
 
 function buildPredictedEmbed(predicted, updatedAt) {
   const age    = updatedAt ? Math.round((Date.now() - updatedAt) / 60000) : null;
@@ -298,30 +297,29 @@ function buildPredictedEmbed(predicted, updatedAt) {
 
         let restockStr;
         if (item.lastEmptyAt && item.avgRestockMins) {
-          const restockEtaMs = item.lastEmptyAt + item.avgRestockMins * 60000;
-          const restockTct   = new Date(restockEtaMs).toUTCString().match(/(\d{2}:\d{2})/)?.[1] || '?';
+          const restockEtaMs     = item.lastEmptyAt + item.avgRestockMins * 60000;
+          const restockTct       = new Date(restockEtaMs).toUTCString().match(/(\d{2}:\d{2})/)?.[1] || '?';
           const minsUntilRestock = Math.round((restockEtaMs - now) / 60000);
-
           if (minsUntilRestock <= 0) {
-            // Already overdue — should be restocked
             restockStr = `⚡ Overdue — restock expected any time (~${restockTct} TCT predicted)`;
           } else if (restockEtaMs <= landEtaMs) {
-            // Restocks BEFORE you land — good to go
-            const minsBeforeLanding = Math.round((landEtaMs - restockEtaMs) / 60000);
-            restockStr = `✅ Restocks ~${restockTct} TCT — ${minsBeforeLanding}m before you land (~${landTct} TCT)`;
+            const minsEarly = Math.round((landEtaMs - restockEtaMs) / 60000);
+            restockStr = `✅ Restocks ~${restockTct} TCT — ${minsEarly}m before you land (~${landTct} TCT)`;
           } else {
-            // Restocks AFTER you land — too late
-            const minsAfterLanding = Math.round((restockEtaMs - landEtaMs) / 60000);
-            restockStr = `❌ Restocks ~${restockTct} TCT — ${minsAfterLanding}m after landing (~${landTct} TCT)`;
+            const minsLate = Math.round((restockEtaMs - landEtaMs) / 60000);
+            restockStr = `❌ Restocks ~${restockTct} TCT — ${minsLate}m after landing (~${landTct} TCT)`;
           }
         } else {
           restockStr = `*No restock history · lands ~${landTct} TCT*`;
         }
 
+        const profit = tripLines(item);
+
         return (
           `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}**\n` +
           `　${stateStr(item.marketState)} · Conf: ${conf} · ✈️ ${pilotMins}m private pilot\n` +
-          `　${restockStr}`
+          `　${restockStr}\n` +
+          (profit ? `${profit}` : `　💰 No price data`)
         );
       }).join('\n\n')
     : '_No predicted restocks right now_';
@@ -329,20 +327,20 @@ function buildPredictedEmbed(predicted, updatedAt) {
   return {
     color: 0x9B59B6,
     title: '🔮 Predicted Restocks',
-    description: '> ⚠️ *Based on historical patterns — always verify before flying*\n> ✅ = restocked before landing · ❌ = restocks after landing',
+    description: '> ⚠️ *Based on historical patterns — always verify before flying*\n> ✅ = restocks before landing · ❌ = restocks after landing',
     fields: [{ name: '🔮 Empty Now — Private Pilot Times', value: predLines, inline: false }],
     footer: { text: `Data age: ${ageStr} · v3 prediction engine · Refreshes every 15 mins` },
     timestamp: new Date().toISOString(),
   };
 }
 
-// ── Legacy combined embed (kept for bestarrival + alerts) ─────────────────────
+// ── Legacy stub (kept for alert system compatibility) ─────────────────────────
 
 function buildStockEmbed(inStock, predicted, updatedAt) {
   return buildInStockEmbed(inStock, updatedAt);
 }
 
-// ── Best-for-arrival embed ─────────────────────────────────────────────────────
+// ── Best-for-arrival embed ────────────────────────────────────────────────────
 
 function buildBestArrivalEmbed(flightMins, items, updatedAt) {
   const age    = updatedAt ? Math.round((Date.now() - updatedAt) / 60000) : null;
@@ -374,7 +372,7 @@ function buildBestArrivalEmbed(flightMins, items, updatedAt) {
   };
 }
 
-// ── Alert subscription selection embed ────────────────────────────────────────
+// ── Alert subscription selection embed ───────────────────────────────────────
 
 function buildAlertSelectionEmbed(inStock, predicted, subscribedIds = []) {
   const subSet  = new Set(subscribedIds.map(String));
@@ -403,18 +401,17 @@ function buildAlertSelectionEmbed(inStock, predicted, subscribedIds = []) {
   };
 }
 
-// ── Alert DM / channel ping embed ─────────────────────────────────────────────
+// ── Alert DM / channel ping embed ────────────────────────────────────────────
 
 function buildAlertEmbed(item, flightMins, travelClass, capacity) {
-  const cap    = Math.min(capacity || 10, 35);
-  const clsLbl = { std:'Standard', airstrip:'Airstrip', wlt:'WLT', business:'Business' }[travelClass] || 'Standard';
-  const flag   = CC_FLAGS[item.country] || '🌍';
-  const wKey   = closestWindow(flightMins);
-  const w      = item.windows?.[wKey];
-  const margin = item.marketPrice > item.cost ? item.marketPrice - item.cost : 0;
+  const cap      = Math.min(capacity || 10, 35);
+  const clsLbl   = { std:'Standard', airstrip:'Airstrip', wlt:'WLT', business:'Business' }[travelClass] || 'Standard';
+  const flag     = CC_FLAGS[item.country] || '🌍';
+  const wKey     = closestWindow(flightMins);
+  const w        = item.windows?.[wKey];
+  const margin   = item.marketPrice > item.cost ? item.marketPrice - item.cost : 0;
   const estQty   = Math.min(w?.expectedStock ?? 0, cap);
   const estTotal = margin > 0 ? Math.round(estQty * margin) : null;
-
   const isUrgent = item.qty > 0 && w?.depletes;
 
   const fields = [
@@ -430,10 +427,10 @@ function buildAlertEmbed(item, flightMins, travelClass, capacity) {
     fields.push({ name: '🔄 Refill Chance', value: `${w.refillChance}% by ${wKey}m`, inline: true });
   }
   if (margin > 0) {
-    fields.push({ name: '💰 Margin/unit',    value: fmt(margin),    inline: true });
+    fields.push({ name: '💰 Margin/unit',     value: fmt(margin),    inline: true });
   }
   if (estTotal && estTotal > 0) {
-    fields.push({ name: '💵 Est. trip value', value: fmt(estTotal), inline: true });
+    fields.push({ name: '💵 Est. trip value', value: fmt(estTotal),  inline: true });
   }
 
   return {

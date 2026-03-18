@@ -134,8 +134,15 @@ async function fetchScoredItems() {
     }
   }
 
-  inStock.sort(  (a, b) => (b.opportunity.score ?? 0) - (a.opportunity.score ?? 0));
-  predicted.sort((a, b) => (b.windows[30]?.refillChance ?? 0) - (a.windows[30]?.refillChance ?? 0));
+  inStock.sort(  (a, b) => (b.margin ?? 0) - (a.margin ?? 0));
+  predicted.sort((a, b) => {
+    // Primary: expected stock on landing at airstrip window (most profit opportunity)
+    const aWin = a.windows[closestWindow(FLIGHT_MINS[a.country]?.airstrip ?? 30)]?.expectedStock ?? 0;
+    const bWin = b.windows[closestWindow(FLIGHT_MINS[b.country]?.airstrip ?? 30)]?.expectedStock ?? 0;
+    if (bWin !== aWin) return bWin - aWin;
+    // Tiebreak: profit margin
+    return (b.margin ?? 0) - (a.margin ?? 0);
+  });
 
   return {
     inStock:   inStock.slice(0, 5),

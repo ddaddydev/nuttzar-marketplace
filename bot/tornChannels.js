@@ -262,17 +262,34 @@ function buildCrimesEmbed(crimesData) {
     .sort((a, b) => b.pct - a.pct);
 
   // Shoplifting — alert when ALL conditions in the location are disabled (off)
+  // Shoplifting — show any location with at least one guard/camera off
   const hotShoplift = Object.entries(crimesData.shoplifting || {})
-    .filter(([, items]) => Array.isArray(items) && items.length && items.every(i => i.disabled === true))
-    .map(([key, items]) => ({ name: fmtKey(key), detail: items.map(i => i.title).join(', ') }));
+    .filter(([, items]) => Array.isArray(items) && items.length && items.some(i => i.disabled === true))
+    .map(([key, items]) => {
+      const off      = items.filter(i => i.disabled === true).map(i => i.title);
+      const on       = items.filter(i => i.disabled === false).map(i => i.title);
+      const allClear = on.length === 0;
+      return { name: fmtKey(key), off, on, allClear };
+    })
+    .sort((a, b) => {
+      if (a.allClear && !b.allClear) return -1;
+      if (!a.allClear && b.allClear) return 1;
+      return b.off.length - a.off.length;
+    });
 
   const searchLines = hotSearch.length
     ? hotSearch.map(s => `🟢 **${s.name}** — **${s.pct}%** · _${s.title}_`).join('\n')
     : `_No subcategories above ${CASH_THRESHOLD}% right now_`;
 
   const shopliftLines = hotShoplift.length
-    ? hotShoplift.map(s => `🔓 **${s.name}** — All clear _(${s.detail})_`).join('\n')
-    : '_No fully clear shoplifting opportunities_';
+    ? hotShoplift.map(s => {
+        const icon   = s.allClear ? '🔓' : '🟡';
+        const status = s.allClear
+          ? `All clear _(${s.off.join(', ')})_`
+          : `🔓 Off: **${s.off.join(', ')}** · 🔒 On: ${s.on.join(', ')}`;
+        return `${icon} **${s.name}** — ${status}`;
+      }).join('\n')
+    : '_No shoplifting opportunities right now_';
 
   const hasAlert = hotSearch.length > 0 || hotShoplift.length > 0;
 
@@ -281,10 +298,10 @@ function buildCrimesEmbed(crimesData) {
     title:       hasAlert ? '🚨 Crimes Intel — Go Time!' : '🔍 Crimes Intel',
     description: hasAlert ? '**Crime opportunities detected!**' : '_Monitoring... nothing hot right now_',
     fields: [
-      { name: `💰 Search for Cash (≥${CASH_THRESHOLD}%)`,  value: searchLines,   inline: false },
-      { name: '🏪 Shoplifting (All Guards/Cameras Off)',    value: shopliftLines, inline: false },
+      { name: `💰 Search for Cash (≥${CASH_THRESHOLD}%)`,      value: searchLines,   inline: false },
+      { name: '🏪 Shoplifting (Any Guard/Camera Off)',           value: shopliftLines, inline: false },
     ],
-    footer: { text: `Beach ≥${BEACH_THRESHOLD}% · Other search ≥${CASH_THRESHOLD}% · Shoplifting all-clear · Updates every 5m` },
+    footer: { text: `Beach ≥${BEACH_THRESHOLD}% · Other search ≥${CASH_THRESHOLD}% · 🔓 = all clear · 🟡 = partial · Updates every 5m` },
     timestamp: new Date().toISOString(),
   };
 }

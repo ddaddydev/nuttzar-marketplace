@@ -129,7 +129,7 @@ async function fetchScoredItems() {
       burnRate:       item.burnRate       ?? null,
     };
 
-    if (qty > 0 && (w30.stars ?? 0) >= 3) {
+    if (qty > 0 && margin > 0) {
       inStock.push({ ...base, inStock: true });
     } else if (qty === 0 && (w30.refillChance ?? 0) >= 20) {
       predicted.push({ ...base, inStock: false });
@@ -233,23 +233,23 @@ function buildInStockEmbed(inStock, updatedAt) {
         }
 
         // Profit/hr: margin * burn rate (units sold per min) * 60
-        let profitHr = null;
-        if (item.burnRate > 0 && item.margin > 0) {
-          profitHr = Math.round(item.margin * item.burnRate * 60);
+        let profitHrStr = 'N/A';
+        if (item.burnRate != null && item.burnRate > 0 && item.margin > 0) {
+          profitHrStr = `~${fmt(Math.round(item.margin * item.burnRate * 60))}/hr`;
         }
 
         // Cost breakdown
-        const costPer  = item.cost > 0 ? fmt(item.cost) : '?';
-        const cost29   = item.cost > 0 ? fmt(item.cost * 29) : '?';
+        const costPer = item.cost > 0 ? fmt(item.cost) : '?';
+        const sellPer = item.marketPrice > 0 ? fmt(item.marketPrice) : '?';
+        const cost29  = item.cost > 0 ? fmt(item.cost * 29) : '?';
         const pilotMins = FLIGHT_MINS[item.country]?.airstrip ?? '?';
 
         return (
           `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}**\n` +
           `　${fmtQty(item.qty)} in stock · ${stateStr(item.marketState)}${score}\n` +
           `　📉 Depletes: ${depletionStr}\n` +
-          `　💰 ${fmt(item.margin)}/unit · 29× costs **${cost29}** (${costPer} each)` +
-          (profitHr ? ` · ~${fmt(profitHr)}/hr` : '') + `\n` +
-          `　✈️ ${pilotMins}m private pilot · Conf: ${conf}`
+          `　💰 Buy ${costPer} → Sell ${sellPer} · ${fmt(item.margin)}/unit · ${profitHrStr}\n` +
+          `　🧳 29× costs **${cost29}** · ✈️ ${pilotMins}m private pilot · Conf: ${conf}`
         );
       }).join('\n\n')
     : '_No quality in-stock opportunities right now_';

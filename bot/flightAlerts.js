@@ -2,7 +2,8 @@
 // Uses Nuttzar Stock Worker v3 API:
 //   /api/stocks  — full item list with pre-computed windows + opportunity scores
 //   /api/best    — best items for a specific flight window (/bestarrival command)
-// Prices come from the worker's built-in pricer (marketPrice field) — no Weav3r dependency.
+// Prices come from Weav3r /marketplace API (lowest_price → sell price for margin calc).
+// Weav3r is called once per refresh (1 call per 15 min) — well within 100 calls/min limit.
 
 const axios = require('axios');
 
@@ -86,17 +87,31 @@ function closestWindow(flightMins) {
     Math.abs(w - flightMins) < Math.abs(best - flightMins) ? w : best, 30);
 }
 
+const WEAV3R_MARKET_URL = 'https://weav3r.dev/api/marketplace';
+
 // ── Core data fetcher ─────────────────────────────────────────────────────────
 
 /**
- * Fetches the full item list from the v3 worker.
- * Returns scored/split inStock and predicted arrays, plus raw data for alerts.
- * Prices are embedded in marketPrice — no secondary fetch needed.
+ * Fetches the full item list from the v3 worker + Weav3r market prices.
+ * Uses Weav3r lowest_price as the sell price for margin calculation.
  */
 async function fetchScoredItems() {
-  const res       = await axios.get(STOCK_URL, { timeout: 15000 });
-  const raw       = res.data?.items    || [];
-  const updatedAt = res.data?.updatedAt || null;
+  // Fetch worker data and Weav3r prices in parallel
+  const [workerRes, weav3rRes] = await Promise.all([
+    axios.get(STOCK_URL, { timeout: 15000 }),
+    axios.get(WEAV3R_MARKET_URL, { timeout: 15000 }).catch(() => null),
+  ]);
+
+  const raw       = workerRes.data?.items    || [];
+  const updatedAt = workerRes.data?.updatedAt || null;
+
+  // Build lookup: item_id → lowest_price (fall back to market_price)
+  const priceMap = {};
+  if (weav3rRes?.data?.items) {
+    for (const w of weav3rRes.data.items) {
+      priceMap[w.item_id] = w.lowest_price || w.market_price || 0;
+    }
+  }
 
   const inStock   = [];
   const predicted = [];
@@ -104,7 +119,7 @@ async function fetchScoredItems() {
   for (const item of raw) {
     const {
       id, name, country, qty, cost,
-      marketPrice = 0, marketState, windows,
+      marketState, windows,
       opportunity, confidence, sourceAgeMins,
     } = item;
 
@@ -114,16 +129,19 @@ async function fetchScoredItems() {
     const w30 = windows[30];
     if (!w30)  continue;
 
-    const opp = opportunity || { score: 0, label: '', stars: 0 };
+    const opp        = opportunity || { score: 0, label: '', stars: 0 };
+    const sellPrice  = priceMap[id] || 0;
+    const margin     = sellPrice > cost ? sellPrice - cost : 0;
 
     const base = {
-      id, name, country, qty, cost, marketPrice,
+      id, name, country, qty, cost,
+      marketPrice:    sellPrice,
       marketState:    marketState || 'stable',
       windows,
       opportunity:    opp,
       confidence:     confidence  || 'low',
       sourceAgeMins:  sourceAgeMins || 0,
-      margin:         marketPrice > cost ? marketPrice - cost : 0,
+      margin,
       lastEmptyAt:    item.lastEmptyAt    ?? null,
       avgRestockMins: item.avgRestockMins ?? null,
       burnRate:       item.burnRate       ?? null,
@@ -138,11 +156,9 @@ async function fetchScoredItems() {
 
   inStock.sort(  (a, b) => (b.margin ?? 0) - (a.margin ?? 0));
   predicted.sort((a, b) => {
-    // Primary: expected stock on landing at airstrip window (most profit opportunity)
     const aWin = a.windows[closestWindow(FLIGHT_MINS[a.country]?.airstrip ?? 30)]?.expectedStock ?? 0;
     const bWin = b.windows[closestWindow(FLIGHT_MINS[b.country]?.airstrip ?? 30)]?.expectedStock ?? 0;
     if (bWin !== aWin) return bWin - aWin;
-    // Tiebreak: profit margin
     return (b.margin ?? 0) - (a.margin ?? 0);
   });
 

@@ -240,14 +240,13 @@ function buildInStockEmbed(inStock, updatedAt) {
   const age    = updatedAt ? Math.round((Date.now() - updatedAt) / 60000) : null;
   const ageStr = age == null ? '—' : age < 2 ? 'Fresh 🟢' : age < 20 ? `${age}m 🟡` : `${age}m 🔴`;
 
-  const stockLines = inStock.length
+  const fields = inStock.length
     ? inStock.map((item, i) => {
-        const flag      = CC_FLAGS[item.country] || '🌍';
-        const conf      = confShort(item.windows[30]?.confidencePct);
-        const score     = item.opportunity.label ? ` · *${item.opportunity.label}*` : '';
-        const pilot     = FLIGHT_MINS[item.country]?.airstrip ?? '?';
+        const flag  = CC_FLAGS[item.country] || '🌍';
+        const conf  = confShort(item.windows[30]?.confidencePct);
+        const score = item.opportunity.label ? ` · *${item.opportunity.label}*` : '';
+        const pilot = FLIGHT_MINS[item.country]?.airstrip ?? '?';
 
-        // Depletion time
         let depletionStr = 'Rate unknown';
         if (item.burnRate && item.burnRate > 0) {
           const minsLeft   = Math.round(item.qty / item.burnRate);
@@ -259,21 +258,21 @@ function buildInStockEmbed(inStock, updatedAt) {
 
         const profit = tripLines(item);
 
-        return (
-          `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}**\n` +
-          `　${fmtQty(item.qty)} in stock · ${stateStr(item.marketState)}${score}\n` +
-          `　📉 Depletes: ${depletionStr}\n` +
+        const value =
+          `${fmtQty(item.qty)} in stock · ${stateStr(item.marketState)}${score}\n` +
+          `📉 Depletes: ${depletionStr}\n` +
           (profit ? `${profit}\n` : '') +
-          `　✈️ ${pilot}m private pilot · Round trip: ${typeof pilot === 'number' ? pilot * 2 : '?'}m · Conf: ${conf}`
-        );
-      }).join('\n\n')
-    : '_No quality in-stock opportunities right now_';
+          `✈️ ${pilot}m private pilot · Round trip: ${typeof pilot === 'number' ? pilot * 2 : '?'}m · Conf: ${conf}`;
+
+        return { name: `${i+1}. ${flag} ${CC_NAMES[item.country]||item.country} — ${item.name}`, value, inline: false };
+      })
+    : [{ name: '📦 In Stock Now', value: '_No quality in-stock opportunities right now_', inline: false }];
 
   return {
     color: 0x5865F2,
     title: '📦 Top In-Stock Opportunities',
     description: '> Ranked by profit per unit · Use `/xanax` for Xanax-only DM',
-    fields: [{ name: '📦 In Stock Now', value: stockLines, inline: false }],
+    fields,
     footer: { text: `Data age: ${ageStr} · Refreshes every 15 mins` },
     timestamp: new Date().toISOString(),
   };
@@ -285,7 +284,7 @@ function buildPredictedEmbed(predicted, updatedAt) {
   const age    = updatedAt ? Math.round((Date.now() - updatedAt) / 60000) : null;
   const ageStr = age == null ? '—' : age < 2 ? 'Fresh 🟢' : age < 20 ? `${age}m 🟡` : `${age}m 🔴`;
 
-  const predLines = predicted.length
+  const fields = predicted.length
     ? predicted.map((item, i) => {
         const flag      = CC_FLAGS[item.country] || '🌍';
         const now       = Date.now();
@@ -315,20 +314,20 @@ function buildPredictedEmbed(predicted, updatedAt) {
 
         const profit = tripLines(item);
 
-        return (
-          `**${i+1}.** ${flag} **${CC_NAMES[item.country]||item.country} — ${item.name}**\n` +
-          `　${stateStr(item.marketState)} · Conf: ${conf} · ✈️ ${pilotMins}m private pilot\n` +
-          `　${restockStr}\n` +
-          (profit ? `${profit}` : `　💰 No price data`)
-        );
-      }).join('\n\n')
-    : '_No predicted restocks right now_';
+        const value =
+          `${stateStr(item.marketState)} · Conf: ${conf} · ✈️ ${pilotMins}m private pilot\n` +
+          `${restockStr}\n` +
+          (profit ? profit : `💰 No price data`);
+
+        return { name: `${i+1}. ${flag} ${CC_NAMES[item.country]||item.country} — ${item.name}`, value, inline: false };
+      })
+    : [{ name: '🔮 Predicted Restocks', value: '_No predicted restocks right now_', inline: false }];
 
   return {
     color: 0x9B59B6,
     title: '🔮 Predicted Restocks',
     description: '> ⚠️ *Based on historical patterns — always verify before flying*\n> ✅ = restocks before landing · ❌ = restocks after landing',
-    fields: [{ name: '🔮 Empty Now — Private Pilot Times', value: predLines, inline: false }],
+    fields,
     footer: { text: `Data age: ${ageStr} · v3 prediction engine · Refreshes every 15 mins` },
     timestamp: new Date().toISOString(),
   };

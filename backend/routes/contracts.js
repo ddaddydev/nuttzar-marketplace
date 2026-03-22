@@ -158,4 +158,31 @@ router.post('/test-seed', internalAuth, (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
+// ── POST /api/contracts/:id/cancel ───────────────────────────────────────────
+// Internal only — admin cancels a contract, expiring all active claims
+router.post('/:id/cancel', internalAuth, (req, res) => {
+  try {
+    const id       = parseInt(req.params.id);
+    const contract = getContract(id);
+    if (!contract) return res.status(404).json({ success: false, error: 'Contract not found' });
+    if (contract.status === 'completed') return res.status(400).json({ success: false, error: 'Contract already completed' });
+
+    const db = getDb();
+
+    // Expire all active claims and return units to pool
+    const activeClaims = db.prepare(`SELECT * FROM claims WHERE contract_id = ? AND status = 'active'`).all(id);
+    for (const claim of activeClaims) {
+      db.prepare(`UPDATE claims SET status = 'expired' WHERE id = ?`).run(claim.id);
+      db.prepare(`UPDATE contracts SET quantity_remaining = quantity_remaining + ?, updated_at = unixepoch() WHERE id = ?`)
+        .run(claim.quantity_claimed, id);
+      if (global.discordBot && claim.seller_discord_id) {
+        global.discordBot.emit('claim_expired', claim);
+      }
+    }
+
+    db.prepare(`UPDATE contracts SET status = 'cancelled', updated_at = unixepoch() WHERE id = ?`).run(id);
+    res.json({ success: true, type: contract.type, cancelled_claims: activeClaims.length });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
 module.exports = router;

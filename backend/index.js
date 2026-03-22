@@ -20,7 +20,7 @@ const contractRoutes          = require('./routes/contracts');
 const claimRoutes             = require('./routes/claims');
 const userRoutes              = require('./routes/users');
 const flightPrefsRoutes       = require('./routes/flightPrefs');
-const { expirestaleClaims }   = require('./services/contracts');
+// services/contracts loaded lazily in cron to avoid circular dependency
 
 const app  = express();
 app.set('trust proxy', 1); // Railway sits behind a proxy
@@ -129,6 +129,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date()
 // ── Cron: expire stale claims every 2 minutes ─────────────────────────────────
 cron.schedule('*/2 * * * *', () => {
   try {
+    const { expirestaleClaims } = require('./services/contracts');
     const expired = expirestaleClaims();
     if (expired.length) {
       console.log(`[CRON] Expired ${expired.length} stale claim(s)`);

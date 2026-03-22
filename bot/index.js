@@ -615,8 +615,21 @@ async function handleSlash(interaction) {
 
   if (cmd === 'cancelclaim') {
     await interaction.deferReply({ ephemeral: true });
+    const claimId = interaction.options.getInteger('claim_id');
+
+    // Admin can force-cancel any claim
+    if (interaction.user.id === ADMIN_DISCORD_ID) {
+      const res = await post(`${BACKEND}/api/claims/${claimId}/cancel`, {
+        internal_key: process.env.INTERNAL_API_KEY,
+      }, { timeout: 8000 });
+      if (!res?.data?.success) return interaction.editReply({ content: `❌ Failed: ${res?.data?.error || 'Unknown error'}` });
+      if (res.data.contract_id) await updateContractEmbed(res.data.contract_id).catch(() => {});
+      return interaction.editReply({ content: `✅ Claim #${claimId} cancelled. Units returned to pool.` });
+    }
+
+    // Non-admins: request cancellation (notify admin)
     return interaction.editReply({
-      content: `⚠️ To cancel claim #${interaction.options.getInteger('claim_id')}, contact an admin in #support.`,
+      content: `⚠️ Cancellation request submitted for Claim #${claimId}. An admin will review it shortly.`,
     });
   }
 
@@ -881,10 +894,15 @@ async function handleButton(interaction) {
     const contractId = parseInt(id.replace('claim_', ''));
     const tornId     = await getTornId(interaction.user.id);
     if (!tornId) return interaction.reply({ content: '❌ Not verified. Use `/verify`.', ephemeral: true });
-    const cr         = await api.getActiveContracts();
-    const contract   = cr.contracts?.find(c => c.id === contractId);
-    const maxClaim   = contract?.type === 'bounty' ? 10 : 15;
-    const maxAllowed = Math.min(maxClaim, contract?.quantity_remaining || 0);
+    // Fetch contract directly by ID — more reliable than searching active list
+    const contractRes = await get(`${BACKEND}/api/contracts/${contractId}`);
+    const contract    = contractRes?.data?.contract;
+    if (!contract || contract.status !== 'active')
+      return interaction.reply({ content: '❌ This contract is no longer active.', ephemeral: true });
+    const maxClaim   = contract.type === 'bounty' ? 10 : 15;
+    const maxAllowed = Math.min(maxClaim, contract.quantity_remaining || 0);
+    if (maxAllowed < 1)
+      return interaction.reply({ content: '❌ No units available to claim on this contract.', ephemeral: true });
     return interaction.showModal(modal(`modal_claim_${contractId}`, `Claim Contract #${contractId}`,
       textInput('quantity', `How many units? (max ${maxAllowed})`, { placeholder: `1–${maxAllowed}`, min: 1, max: 3 })
     ));

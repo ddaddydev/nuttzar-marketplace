@@ -176,4 +176,22 @@ router.post('/payouts/:id/sent', internalAuth, (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
+// ── POST /api/claims/:id/cancel ──────────────────────────────────────────────
+// Admin force-cancels a claim, returning units to pool
+router.post('/:id/cancel', internalAuth, (req, res) => {
+  try {
+    const db      = getDb();
+    const claimId = parseInt(req.params.id);
+    const claim   = getClaim(claimId);
+    if (!claim)                    return res.status(404).json({ success: false, error: 'Claim not found' });
+    if (claim.status !== 'active') return res.status(400).json({ success: false, error: `Claim is already ${claim.status}` });
+
+    db.prepare(`UPDATE claims SET status = 'expired' WHERE id = ?`).run(claimId);
+    db.prepare(`UPDATE contracts SET quantity_remaining = quantity_remaining + ?, updated_at = unixepoch() WHERE id = ?`)
+      .run(claim.quantity_claimed, claim.contract_id);
+
+    res.json({ success: true, contract_id: claim.contract_id });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
 module.exports = router;

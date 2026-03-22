@@ -398,6 +398,19 @@ client.once(Events.ClientReady, async () => {
   await refreshFlightEmbed();
   await refreshLeaderboard();
   await initChannels(client);
+
+  // Refresh leaderboard daily at midnight UTC
+  const scheduleDailyLeaderboard = () => {
+    const now       = Date.now();
+    const midnight  = new Date();
+    midnight.setUTCHours(24, 0, 0, 0);
+    const msToMidnight = midnight.getTime() - now;
+    setTimeout(() => {
+      refreshLeaderboard();
+      setInterval(() => refreshLeaderboard(), 24 * 60 * 60000);
+    }, msToMidnight);
+  };
+  scheduleDailyLeaderboard();
   setInterval(pollPayouts,        30000);
   setInterval(refreshFlightEmbed, 15 * 60000); // matches worker update frequency
   setInterval(pollFlightAlerts,   2 * 60000);
@@ -618,6 +631,19 @@ async function handleSlash(interaction) {
     ));
   }
 
+  if (cmd === 'admin-cancel-contract') {
+    if (interaction.user.id !== ADMIN_DISCORD_ID) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    const contractId = interaction.options.getInteger('contract_id');
+    const res = await post(`${BACKEND}/api/contracts/${contractId}/cancel`, {
+      internal_key: process.env.INTERNAL_API_KEY,
+    }, { timeout: 10000 });
+    if (!res?.data?.success) return interaction.editReply({ content: `❌ Failed to cancel: ${res?.data?.error || 'Unknown error'}` });
+    await deleteContractEmbed(contractId);
+    await ensurePlaceholder(res.data.type || 'loss');
+    return interaction.editReply({ content: `✅ Contract #${contractId} cancelled. All active claims have been expired and units returned.` });
+  }
+
   if (cmd === 'admin-verify-claim') {
     if (interaction.user.id !== ADMIN_DISCORD_ID) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     await interaction.deferReply({ ephemeral: true });
@@ -627,27 +653,6 @@ async function handleSlash(interaction) {
     }, { timeout: 10000 });
     if (!result) return interaction.editReply({ content: '❌ Request failed.' });
     return interaction.editReply({ content: `✅ Claim #${claimId} force-approved.\nPayout: **$${Number(result.data.payout_amount).toLocaleString()}** queued.` });
-  }
-
-  if (cmd === 'leaderboard') {
-    await interaction.deferReply({ ephemeral: false });
-    const res = await get(`${BACKEND}/api/users/leaderboard`);
-    if (!res?.data?.success || !res.data.leaderboard?.length) {
-      return interaction.editReply({ content: '📭 No earnings data yet.' });
-    }
-    const medals = ['🥇','🥈','🥉','4️⃣','5️⃣'];
-    const lines = res.data.leaderboard.map((u, i) =>
-      `${medals[i]} **${u.torn_name || `User [${u.torn_id}]`}** — ${formatMoney(u.lifetime_earned)} earned · ${u.completed_claims} claims`
-    );
-    return interaction.editReply({
-      embeds: [{
-        color: 0xF1C40F,
-        title: '🏆 NuttHub Leaderboard — Top 5 Earners',
-        description: lines.join('\n'),
-        footer: { text: 'Based on all paid-out earnings · Nuttzar Marketplace' },
-        timestamp: new Date().toISOString(),
-      }],
-    });
   }
 
   if (cmd === 'testapi') {
@@ -741,11 +746,12 @@ async function handleModal(interaction) {
 
     // Auto-fetch target name from Torn API
     const apiKey = process.env.ADMIN_API_KEY;
-    let targetName = `User [${targetTornId}]`;
+    let targetName = null;
     if (apiKey) {
-      const tornRes = await get(`https://api.torn.com/v2/user/${targetTornId}?fields=name&key=${apiKey}`, { timeout: 5000 });
+      const tornRes = await get(`https://api.torn.com/user/${targetTornId}?selections=basic&key=${apiKey}`, { timeout: 5000 });
       if (tornRes?.data?.name) targetName = tornRes.data.name;
     }
+    if (!targetName) return interaction.editReply({ content: '❌ Could not fetch target name from Torn. Check the Torn ID and try again.' });
 
     const res = await post(`${BACKEND}/api/contracts/test-seed`, {
       internal_key:     process.env.INTERNAL_API_KEY,
@@ -900,7 +906,9 @@ async function handleButton(interaction) {
       const c  = cr.contracts?.find(c => c.id === result.claim.contract_id);
       if (!c || c.status === 'completed') {
         await deleteContractEmbed(result.claim.contract_id);
-        await ensurePlaceholder(result.claim?.type || result.claim?.contract_type || 'loss');
+        // Fetch contract separately to get type (claims table has no type column)
+        const completedContract = await get(`${BACKEND}/api/contracts/${result.claim.contract_id}`);
+        await ensurePlaceholder(completedContract?.data?.contract?.type || 'loss');
       } else {
         await updateContractEmbed(result.claim.contract_id);
       }

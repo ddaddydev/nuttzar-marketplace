@@ -26,7 +26,8 @@ const commands = [
     .addIntegerOption(o => o.setName('minutes').setDescription('Your flight time in minutes').setRequired(true)
       .setMinValue(1).setMaxValue(300)),
   new SlashCommandBuilder().setName('xanax').setDescription('Get Xanax stock status across all countries sent to your DMs'),
-  new SlashCommandBuilder().setName('leaderboard').setDescription('Show the top 5 earners on NuttHub'),
+  new SlashCommandBuilder().setName('admin-cancel-contract').setDescription('[Admin] Cancel a contract and expire all active claims')
+    .addIntegerOption(o => o.setName('contract_id').setDescription('Contract ID to cancel').setRequired(true)),
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);

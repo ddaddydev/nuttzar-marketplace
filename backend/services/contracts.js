@@ -1,189 +1,202 @@
-const express      = require('express');
-const router       = express.Router();
-const { verifyApiKey, verifyPayment } = require('../services/tornApi');
-const { encrypt }  = require('../services/encryption');
-const internalAuth = require('../middleware/internalAuth');
-const {
-  calculatePricing, createContract, activateContract,
-  getActiveContracts, getContract, getContractByUuid, MIN_PRICES,
-} = require('../services/contracts');
+// backend/services/contracts.js
 const { getDb } = require('../db/schema');
+const { v4: uuid } = require('uuid');
 
-// ── GET /api/contracts ────────────────────────────────────────────────────────
-// Public — list active contracts (optionally filter by type)
-router.get('/', (req, res) => {
+const FEE = 0.10;
+
+const CLAIM_LIMITS = { loss: 15, escape: 15, bounty: 10 };
+const MIN_PRICES   = { loss: 250000, escape: 350000, bounty: 50000 };
+
+// ── Pricing ───────────────────────────────────────────────────────────────────
+function calculatePricing(type, sellerPricePerUnit, quantity, bountyAmount = 0) {
+  const gross        = Math.ceil(sellerPricePerUnit / (1 - FEE));
+  const totalPerUnit = type === 'bounty' ? gross + bountyAmount : gross;
+  const total        = totalPerUnit * quantity;
+  const sellerTotal  = sellerPricePerUnit * quantity;
+  return {
+    seller_price_per_unit:  sellerPricePerUnit,
+    buyer_price_per_unit:   gross,
+    bounty_amount:          bountyAmount,
+    total_buyer_pays:       total,
+    total_seller_receives:  sellerTotal,
+    fee_amount:             total - sellerTotal - (bountyAmount * quantity),
+    quantity,
+  };
+}
+
+// ── Create ────────────────────────────────────────────────────────────────────
+function createContract(data) {
+  const {
+    type, buyer_torn_id, buyer_torn_name, target_torn_id, target_torn_name,
+    seller_price_per_unit, quantity, bounty_amount = 0,
+  } = data;
+
+  if (seller_price_per_unit < MIN_PRICES[type])
+    throw new Error(`Minimum price for ${type} is ${MIN_PRICES[type].toLocaleString()}`);
+
+  const pricing = calculatePricing(type, seller_price_per_unit, quantity, bounty_amount);
+  const id      = uuid();
+
+  const result = getDb().prepare(`
+    INSERT INTO contracts (uuid, type, buyer_torn_id, buyer_torn_name, target_torn_id, target_torn_name,
+      price_per_unit, buyer_price_per_unit, bounty_amount, quantity, quantity_remaining, total_amount)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, type, buyer_torn_id, buyer_torn_name, target_torn_id, target_torn_name,
+    pricing.seller_price_per_unit, pricing.buyer_price_per_unit, bounty_amount,
+    quantity, quantity, pricing.total_buyer_pays,
+  );
+
+  logEvent('contract_created', result.lastInsertRowid, null, buyer_torn_id, { type, quantity, pricing });
+  return getContract(result.lastInsertRowid);
+}
+
+// ── Activate ──────────────────────────────────────────────────────────────────
+function activateContract(contractId) {
+  getDb().prepare(`
+    UPDATE contracts SET status='active', payment_confirmed=1,
+      payment_confirmed_at=unixepoch(), updated_at=unixepoch()
+    WHERE id = ?
+  `).run(contractId);
+  logEvent('contract_activated', contractId, null, null, {});
+  return getContract(contractId);
+}
+
+// ── Read ──────────────────────────────────────────────────────────────────────
+function getActiveContracts(type = null) {
+  const db    = getDb();
+  const query = `SELECT * FROM contracts WHERE status='active'${type ? ' AND type=?' : ''} ORDER BY created_at DESC`;
+  return type ? db.prepare(query).all(type) : db.prepare(query).all();
+}
+
+function getContract(id)      { return getDb().prepare('SELECT * FROM contracts WHERE id = ?').get(id); }
+function getContractByUuid(u) { return getDb().prepare('SELECT * FROM contracts WHERE uuid = ?').get(u); }
+
+// ── Claim ─────────────────────────────────────────────────────────────────────
+function claimUnits(contractId, sellerTornId, sellerDiscordId, quantityClaimed) {
+  const db       = getDb();
+  const contract = getContract(contractId);
+
+  if (!contract)                    throw new Error('Contract not found');
+  if (contract.status !== 'active') throw new Error('Contract is not active');
+
+  const limit = CLAIM_LIMITS[contract.type];
+  if (quantityClaimed > limit)                       throw new Error(`Max claim for ${contract.type} is ${limit}`);
+  if (quantityClaimed > contract.quantity_remaining) throw new Error(`Only ${contract.quantity_remaining} units remaining`);
+
+  const existing = db.prepare(`
+    SELECT * FROM claims WHERE contract_id=? AND seller_torn_id=? AND status='active'
+  `).get(contractId, sellerTornId);
+  if (existing) throw new Error('You already have an active claim on this contract. Complete it first.');
+
+  const expiresAt    = Math.floor(Date.now() / 1000) + 1800;
+  const payoutAmount = contract.price_per_unit * quantityClaimed;
+
+  const result = db.prepare(`
+    INSERT INTO claims (contract_id, seller_torn_id, seller_discord_id, quantity_claimed, expires_at, payout_amount)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(contractId, sellerTornId, sellerDiscordId, quantityClaimed, expiresAt, payoutAmount);
+
+  db.prepare(`UPDATE contracts SET quantity_remaining=quantity_remaining-?, updated_at=unixepoch() WHERE id=?`)
+    .run(quantityClaimed, contractId);
+
+  logEvent('claim_created', contractId, result.lastInsertRowid, sellerTornId, { quantityClaimed, expiresAt });
+  return getClaim(result.lastInsertRowid);
+}
+
+// ── Complete (full) ───────────────────────────────────────────────────────────
+function completeClaim(claimId) {
+  return completeClaimPartial(claimId, null);
+}
+
+// ── Complete (partial) ────────────────────────────────────────────────────────
+function completeClaimPartial(claimId, verifiedCount) {
+  const db    = getDb();
+  const claim = getClaim(claimId);
+  if (!claim)                    throw new Error('Claim not found');
+  if (claim.status !== 'active') throw new Error('Claim is not active');
+
+  const credited     = verifiedCount === null ? claim.quantity_claimed : Math.min(verifiedCount, claim.quantity_claimed);
+  const returned     = claim.quantity_claimed - credited;
+  const payoutAmount = Math.round((claim.payout_amount / claim.quantity_claimed) * credited);
+
+  db.prepare(`UPDATE claims SET status='completed', completed_at=unixepoch(), quantity_verified=?, payout_amount=? WHERE id=?`)
+    .run(credited, payoutAmount, claimId);
+
+  if (credited > 0) {
+    db.prepare(`INSERT INTO payouts (claim_id, contract_id, seller_torn_id, amount) VALUES (?, ?, ?, ?)`)
+      .run(claimId, claim.contract_id, claim.seller_torn_id, payoutAmount);
+  }
+
+  db.prepare(`UPDATE contracts SET quantity_completed=quantity_completed+?, updated_at=unixepoch() WHERE id=?`)
+    .run(credited, claim.contract_id);
+
+  if (returned > 0) {
+    db.prepare(`UPDATE contracts SET quantity_remaining=quantity_remaining+?, updated_at=unixepoch() WHERE id=?`)
+      .run(returned, claim.contract_id);
+  }
+
+  const updated = getContract(claim.contract_id);
+  if (updated.quantity_completed >= updated.quantity) {
+    db.prepare(`UPDATE contracts SET status='completed', updated_at=unixepoch() WHERE id=?`).run(claim.contract_id);
+  }
+
+  logEvent('claim_completed', claim.contract_id, claimId, claim.seller_torn_id, { credited, returned, payout: payoutAmount });
+  return {
+    claim:         getClaim(claimId),
+    contract:      getContract(claim.contract_id),
+    credited,
+    returned,
+    payout_amount: payoutAmount,
+    partial:       returned > 0,
+  };
+}
+
+// ── Expire stale claims (cron) ────────────────────────────────────────────────
+function expireStaleClaims() {
+  const db      = getDb();
+  const now     = Math.floor(Date.now() / 1000);
+  const expired = db.prepare(`SELECT * FROM claims WHERE status='active' AND expires_at<?`).all(now);
+
+  for (const claim of expired) {
+    db.prepare(`UPDATE claims SET status='expired' WHERE id=?`).run(claim.id);
+    db.prepare(`UPDATE contracts SET quantity_remaining=quantity_remaining+?, updated_at=unixepoch() WHERE id=?`)
+      .run(claim.quantity_claimed, claim.contract_id);
+    logEvent('claim_expired', claim.contract_id, claim.id, claim.seller_torn_id, {});
+  }
+
+  return expired;
+}
+
+// ── Payouts ───────────────────────────────────────────────────────────────────
+function markPayoutSent(payoutId) {
+  const db = getDb();
+  db.prepare(`UPDATE payouts SET status='sent', sent_at=unixepoch() WHERE id=?`).run(payoutId);
+  const payout = db.prepare('SELECT * FROM payouts WHERE id=?').get(payoutId);
+  db.prepare(`UPDATE claims SET payout_sent=1, payout_sent_at=unixepoch() WHERE id=?`).run(payout.claim_id);
+  return payout;
+}
+
+function getPendingPayouts() {
+  return getDb().prepare(`
+    SELECT p.*, c.type as contract_type, c.target_torn_id, c.target_torn_name
+    FROM payouts p JOIN contracts c ON p.contract_id=c.id
+    WHERE p.status='pending' ORDER BY p.created_at ASC
+  `).all();
+}
+
+function getClaim(id) { return getDb().prepare('SELECT * FROM claims WHERE id=?').get(id); }
+
+// ── Event log ─────────────────────────────────────────────────────────────────
+function logEvent(eventType, contractId, claimId, tornId, details) {
   try {
-    const { type } = req.query;
-    if (type && !['loss','bounty','escape'].includes(type))
-      return res.status(400).json({ success: false, error: 'Invalid type' });
-    res.json({ success: true, contracts: getActiveContracts(type) });
-  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
+    getDb().prepare(`INSERT INTO transaction_log (event_type,contract_id,claim_id,torn_id,details) VALUES (?,?,?,?,?)`)
+      .run(eventType, contractId, claimId, tornId, JSON.stringify(details));
+  } catch (e) { console.error('[LOG]', e.message); }
+}
 
-// ── GET /api/contracts/:id — by numeric ID or UUID ───────────────────────────
-router.get('/:id', (req, res) => {
-  try {
-    const id = req.params.id;
-    // Numeric ID lookup (used by bot pollPayouts)
-    if (/^\d+$/.test(id)) {
-      const contract = getContract(parseInt(id));
-      if (!contract) return res.status(404).json({ success: false, error: 'Contract not found' });
-      return res.json({ success: true, contract });
-    }
-    // UUID lookup (used by frontend)
-    const contract = getContractByUuid(id);
-    if (!contract) return res.status(404).json({ success: false, error: 'Contract not found' });
-    res.json({ success: true, contract });
-  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
-
-// ── POST /api/contracts/calculate ────────────────────────────────────────────
-// Public — preview pricing before checkout
-router.post('/calculate', (req, res) => {
-  try {
-    const { type, seller_price_per_unit, quantity, bounty_amount = 0 } = req.body;
-    if (!['loss','bounty','escape'].includes(type))
-      return res.status(400).json({ success: false, error: 'Invalid contract type' });
-    if (!Number.isInteger(quantity) || quantity < 1)
-      return res.status(400).json({ success: false, error: 'Invalid quantity' });
-    if (!Number.isInteger(seller_price_per_unit) || seller_price_per_unit < MIN_PRICES[type])
-      return res.status(400).json({ success: false, error: `Minimum price for ${type} is ${MIN_PRICES[type].toLocaleString()}` });
-
-    res.json({ success: true, pricing: calculatePricing(type, seller_price_per_unit, quantity, bounty_amount) });
-  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
-});
-
-// ── POST /api/contracts/checkout ─────────────────────────────────────────────
-// Public — buyer submits contract + api key
-router.post('/checkout', async (req, res) => {
-  try {
-    const { type, seller_price_per_unit, quantity, bounty_amount = 0, target_torn_id, buyer_api_key } = req.body;
-
-    if (!buyer_api_key)
-      return res.status(400).json({ success: false, error: 'API key required' });
-    if (!['loss','bounty','escape'].includes(type))
-      return res.status(400).json({ success: false, error: 'Invalid contract type' });
-    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 100)
-      return res.status(400).json({ success: false, error: 'Invalid quantity (1–100)' });
-    if (!Number.isInteger(seller_price_per_unit) || seller_price_per_unit < MIN_PRICES[type])
-      return res.status(400).json({ success: false, error: `Minimum price for ${type} is ${MIN_PRICES[type].toLocaleString()}` });
-
-    const tornCheck = await verifyApiKey(buyer_api_key);
-    if (!tornCheck.valid)
-      return res.status(400).json({ success: false, error: `Invalid API key: ${tornCheck.error}` });
-
-    const pricing  = calculatePricing(type, seller_price_per_unit, quantity, bounty_amount);
-    const contract = createContract({
-      type, buyer_torn_id: tornCheck.torn_id, buyer_torn_name: tornCheck.torn_name,
-      target_torn_id: target_torn_id || tornCheck.torn_id,
-      target_torn_name: tornCheck.torn_name,
-      seller_price_per_unit, quantity, bounty_amount,
-    });
-
-    // Store encrypted buyer API key for payment verification
-    getDb().prepare(`
-      INSERT INTO users (torn_id, torn_name, encrypted_api_key, role, is_verified)
-      VALUES (?, ?, ?, 'buyer', 1)
-      ON CONFLICT(torn_id) DO UPDATE SET
-        torn_name         = excluded.torn_name,
-        encrypted_api_key = excluded.encrypted_api_key,
-        updated_at        = unixepoch()
-    `).run(tornCheck.torn_id, tornCheck.torn_name, encrypt(buyer_api_key));
-
-    res.json({
-      success: true, contract_uuid: contract.uuid, contract_id: contract.id,
-      buyer_name: tornCheck.torn_name, pricing,
-      payment_instructions: {
-        send_to: 'Brxxntt [4042794]', amount: pricing.total_buyer_pays,
-        message: `Contract #${contract.id}`,
-        note: 'Send the EXACT amount shown. Payment is verified automatically via your Torn API.',
-      },
-    });
-  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
-
-// ── POST /api/contracts/:uuid/verify-payment ─────────────────────────────────
-// Public — check if buyer sent payment
-router.post('/:uuid/verify-payment', async (req, res) => {
-  try {
-    const contract = getContractByUuid(req.params.uuid);
-    if (!contract) return res.status(404).json({ success: false, error: 'Contract not found' });
-    if (contract.payment_confirmed) return res.json({ success: true, already_confirmed: true, contract });
-
-    const user = getDb().prepare('SELECT * FROM users WHERE torn_id = ?').get(contract.buyer_torn_id);
-    if (!user?.encrypted_api_key)
-      return res.status(400).json({ success: false, error: 'Buyer API key not found' });
-
-    const { decrypt } = require('../services/encryption');
-    const paymentCheck = await verifyPayment(decrypt(user.encrypted_api_key), contract.total_amount);
-    if (!paymentCheck.verified)
-      return res.status(400).json({ success: false, error: paymentCheck.error });
-
-    const activated = activateContract(contract.id);
-    if (global.discordBot) global.discordBot.emit('contract_activated', activated);
-
-    res.json({ success: true, contract: activated });
-  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
-
-// ── POST /api/contracts/test-seed ────────────────────────────────────────────
-// Internal only — admin manually creates a contract via /admin-contract
-router.post('/test-seed', internalAuth, (req, res) => {
-  try {
-    const { type, target_torn_id, target_torn_name, buyer_torn_id, quantity_total, price_per_unit, status } = req.body;
-
-    if (!['loss','bounty','escape'].includes(type))
-      return res.status(400).json({ success: false, error: 'Invalid type' });
-    const qty   = parseInt(quantity_total);
-    const price = parseInt(price_per_unit);
-    if (isNaN(qty) || qty < 1)     return res.status(400).json({ success: false, error: 'Invalid quantity' });
-    if (isNaN(price) || price < 1) return res.status(400).json({ success: false, error: 'Invalid price' });
-
-    const bountyAmt = parseInt(req.body.bounty_amount) || 0;
-    const contract = createContract({
-      type, buyer_torn_id: String(buyer_torn_id),
-      buyer_torn_name: 'Admin', target_torn_id: String(target_torn_id),
-      target_torn_name: String(target_torn_name),
-      seller_price_per_unit: price, quantity: qty, bounty_amount: bountyAmt,
-    });
-
-    // Immediately activate if requested
-    if (status === 'active') {
-      const activated = activateContract(contract.id);
-      if (global.discordBot) global.discordBot.emit('contract_activated', activated);
-      return res.json({ success: true, contract: activated });
-    }
-
-    res.json({ success: true, contract });
-  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
-
-// ── POST /api/contracts/:id/cancel ───────────────────────────────────────────
-// Internal only — admin cancels a contract, expiring all active claims
-router.post('/:id/cancel', internalAuth, (req, res) => {
-  try {
-    const id       = parseInt(req.params.id);
-    const contract = getContract(id);
-    if (!contract) return res.status(404).json({ success: false, error: 'Contract not found' });
-    if (contract.status === 'completed') return res.status(400).json({ success: false, error: 'Contract already completed' });
-
-    const db = require('../db/schema').getDb();
-
-    // Expire all active claims and return units to pool
-    const activeClaims = db.prepare(`SELECT * FROM claims WHERE contract_id = ? AND status = 'active'`).all(id);
-    for (const claim of activeClaims) {
-      db.prepare(`UPDATE claims SET status = 'expired' WHERE id = ?`).run(claim.id);
-      db.prepare(`UPDATE contracts SET quantity_remaining = quantity_remaining + ?, updated_at = unixepoch() WHERE id = ?`)
-        .run(claim.quantity_claimed, id);
-      // Notify seller via discord bot if possible
-      if (global.discordBot && claim.seller_discord_id) {
-        global.discordBot.emit('claim_expired', claim);
-      }
-    }
-
-    db.prepare(`UPDATE contracts SET status = 'cancelled', updated_at = unixepoch() WHERE id = ?`).run(id);
-    res.json({ success: true, type: contract.type, cancelled_claims: activeClaims.length });
-  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
-
-module.exports = router;
+module.exports = {
+  calculatePricing, createContract, activateContract, getActiveContracts,
+  getContract, getContractByUuid, claimUnits, completeClaim, completeClaimPartial,
+  expireStaleClaims, markPayoutSent, getClaim, getPendingPayouts,
+  CLAIM_LIMITS, MIN_PRICES, FEE,
+};

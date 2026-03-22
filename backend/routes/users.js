@@ -158,4 +158,24 @@ router.get('/by-discord/:discord_id/apikey', internalAuth, (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
+// ── GET /api/users/leaderboard — top 5 lifetime earners ──────────────────────
+router.get('/leaderboard', internalAuth, (req, res) => {
+  try {
+    const db = getDb();
+    const top = db.prepare(`
+      SELECT u.torn_id, u.torn_name,
+        COALESCE(SUM(CASE WHEN p.status = 'sent' THEN p.amount ELSE 0 END), 0) as lifetime_earned,
+        COUNT(DISTINCT CASE WHEN c.status = 'completed' THEN c.id END) as completed_claims
+      FROM users u
+      LEFT JOIN claims c  ON c.seller_torn_id = u.torn_id
+      LEFT JOIN payouts p ON p.claim_id = c.id
+      WHERE u.role = 'seller'
+      GROUP BY u.torn_id
+      ORDER BY lifetime_earned DESC
+      LIMIT 5
+    `).all();
+    res.json({ success: true, leaderboard: top });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
 module.exports = router;

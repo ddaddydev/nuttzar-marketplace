@@ -64,10 +64,15 @@ function buildContractButtons(contract) {
 
 // ── Claim DM embed ────────────────────────────────────────────────────────────
 function buildClaimDmEmbed(claim, contract) {
+  const atkLink = `https://www.torn.com/loader.php?sid=attack&user2ID=${contract.target_torn_id}`;
+  const btyLink = `https://www.torn.com/bounties.php?p=add&XID=${contract.target_torn_id}`;
   const instructions = {
-    loss:   `Attack **${contract.target_torn_name} [${contract.target_torn_id}]** and **lose** the fight ${claim.quantity_claimed} time(s). Make sure attacks appear in your log.`,
-    escape: `The buyer will attack you. You must **escape** ${claim.quantity_claimed} time(s). Requires your DEX to exceed buyer's SPD.`,
-    bounty: `Place a bounty on **${contract.target_torn_name} [${contract.target_torn_id}]** and fulfill ${claim.quantity_claimed} slot(s).`,
+    loss:   `Attack **[${contract.target_torn_name} [${contract.target_torn_id}]](${atkLink})** and **lose** the fight ${claim.quantity_claimed} time(s). Make sure attacks appear in your log.
+🔗 [Attack ${contract.target_torn_name}](${atkLink})`,
+    escape: `The buyer will attack you. You must **escape** ${claim.quantity_claimed} time(s). Requires your DEX to exceed buyer's SPD.
+🔗 [Attack link for ${contract.target_torn_name}](${atkLink})`,
+    bounty: `Place a bounty on **${contract.target_torn_name} [${contract.target_torn_id}]** and fulfill ${claim.quantity_claimed} slot(s).
+🔗 [Add Bounty on ${contract.target_torn_name}](${btyLink})`,
   };
 
   return new EmbedBuilder()

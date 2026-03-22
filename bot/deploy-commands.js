@@ -22,6 +22,11 @@ const commands = [
   new SlashCommandBuilder().setName('admin-verify-claim').setDescription('[Admin] Force-approve a claim')
     .addIntegerOption(o => o.setName('claim_id').setDescription('Claim ID to approve').setRequired(true)),
   new SlashCommandBuilder().setName('testapi').setDescription('[Admin] Test Torn API connectivity'),
+  new SlashCommandBuilder().setName('bestarrival').setDescription('Get best items for a specific flight time')
+    .addIntegerOption(o => o.setName('minutes').setDescription('Your flight time in minutes').setRequired(true)
+      .setMinValue(1).setMaxValue(300)),
+  new SlashCommandBuilder().setName('xanax').setDescription('Get Xanax stock status across all countries sent to your DMs'),
+  new SlashCommandBuilder().setName('leaderboard').setDescription('Show the top 5 earners on NuttHub'),
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);

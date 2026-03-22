@@ -20,10 +20,18 @@ router.get('/', (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// ── GET /api/contracts/:uuid ──────────────────────────────────────────────────
-router.get('/:uuid', (req, res) => {
+// ── GET /api/contracts/:id — by numeric ID or UUID ───────────────────────────
+router.get('/:id', (req, res) => {
   try {
-    const contract = getContractByUuid(req.params.uuid);
+    const id = req.params.id;
+    // Numeric ID lookup (used by bot pollPayouts)
+    if (/^\d+$/.test(id)) {
+      const contract = getContract(parseInt(id));
+      if (!contract) return res.status(404).json({ success: false, error: 'Contract not found' });
+      return res.json({ success: true, contract });
+    }
+    // UUID lookup (used by frontend)
+    const contract = getContractByUuid(id);
     if (!contract) return res.status(404).json({ success: false, error: 'Contract not found' });
     res.json({ success: true, contract });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
@@ -131,11 +139,12 @@ router.post('/test-seed', internalAuth, (req, res) => {
     if (isNaN(qty) || qty < 1)     return res.status(400).json({ success: false, error: 'Invalid quantity' });
     if (isNaN(price) || price < 1) return res.status(400).json({ success: false, error: 'Invalid price' });
 
+    const bountyAmt = parseInt(req.body.bounty_amount) || 0;
     const contract = createContract({
       type, buyer_torn_id: String(buyer_torn_id),
       buyer_torn_name: 'Admin', target_torn_id: String(target_torn_id),
       target_torn_name: String(target_torn_name),
-      seller_price_per_unit: price, quantity: qty, bounty_amount: 0,
+      seller_price_per_unit: price, quantity: qty, bounty_amount: bountyAmt,
     });
 
     // Immediately activate if requested

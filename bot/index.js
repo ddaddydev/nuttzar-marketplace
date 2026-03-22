@@ -31,13 +31,14 @@ const BACKEND                 = process.env.BACKEND_URL || 'https://calm-percept
 const CLS_LABELS              = { std:'Standard', airstrip:'Airstrip', wlt:'WLT', business:'Business' };
 
 const CHANNEL_IDS = {
-  loss:      process.env.DISCORD_LOSS_CHANNEL,
-  bounty:    process.env.DISCORD_BOUNTY_CHANNEL,
-  escape:    process.env.DISCORD_ESCAPE_CHANNEL,
-  payout:    process.env.DISCORD_PAYOUT_CHANNEL,
-  alerts:    '1481475449182748797',
-  howToSell: '1481079970490220686',
-  flight:    '1482148186138214494',
+  loss:        process.env.DISCORD_LOSS_CHANNEL,
+  bounty:      process.env.DISCORD_BOUNTY_CHANNEL,
+  escape:      process.env.DISCORD_ESCAPE_CHANNEL,
+  payout:      process.env.DISCORD_PAYOUT_CHANNEL,
+  alerts:      '1481475449182748797',
+  howToSell:   '1481079970490220686',
+  flight:      '1482148186138214494',
+  leaderboard: '1485369655643340931',
 };
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -50,6 +51,7 @@ const notifiedAlerts      = new Map();
 let flightCountryMsgId   = null;
 let flightInStockMsgId   = null;
 let flightPredictedMsgId = null;
+let leaderboardMsgId     = null;
 
 // ── Client ────────────────────────────────────────────────────────────────────
 const client = new Client({
@@ -137,6 +139,50 @@ async function postBecomeSeller() {
       components: [row(btn('become_seller', 'Become a Verified Seller', ButtonStyle.Primary, '✅'))],
     });
   } catch (e) { console.error('[BOT] postBecomeSeller:', e.message); }
+}
+
+// ── Leaderboard embed ────────────────────────────────────────────────────────
+async function refreshLeaderboard() {
+  try {
+    const ch = await client.channels.fetch(CHANNEL_IDS.leaderboard).catch(() => null);
+    if (!ch) return;
+    const res = await get(`${BACKEND}/api/users/leaderboard`);
+    if (!res?.data?.success || !res.data.leaderboard) return;
+
+    const medals = ['🥇','🥈','🥉','4️⃣','5️⃣'];
+    const rows   = res.data.leaderboard;
+    const fields = rows.length
+      ? rows.map((u, i) => ({
+          name:   `${medals[i]} ${u.torn_name || `User [${u.torn_id}]`}`,
+          value:  `💰 **${formatMoney(u.lifetime_earned)}** earned · ${u.completed_claims} claims completed`,
+          inline: false,
+        }))
+      : [{ name: 'No data yet', value: '_Complete some contracts to appear here!_', inline: false }];
+
+    const embed = {
+      color: 0xF1C40F,
+      title: '🏆 NuttHub Top Earners — All Time',
+      description: 'Updated automatically whenever a payout is sent.',
+      fields,
+      footer: { text: 'NuttHub Marketplace · Nuttzar' },
+      timestamp: new Date().toISOString(),
+    };
+
+    if (leaderboardMsgId) {
+      try {
+        const msg = await ch.messages.fetch(leaderboardMsgId);
+        await msg.edit({ embeds: [embed] });
+        return;
+      } catch { leaderboardMsgId = null; }
+    }
+
+    // Purge old bot messages and post fresh
+    const fetched = await ch.messages.fetch({ limit: 20 });
+    const botMsgs = fetched.filter(m => m.author.id === client.user.id);
+    for (const m of botMsgs.values()) await m.delete().catch(() => {});
+    const msg = await ch.send({ embeds: [embed] });
+    leaderboardMsgId = msg.id;
+  } catch (e) { console.error('[BOT] refreshLeaderboard:', e.message); }
 }
 
 // ── Flight intel embeds (3 messages: country summary, in-stock, predicted) ────
@@ -244,11 +290,13 @@ async function pollPayouts() {
     if (!result.success || !result.payouts?.length) return;
     for (const payout of result.payouts) {
       if (notifiedPayouts.has(payout.id)) continue;
-      const contract = await api.getActiveContracts()
-        .then(r => r.contracts?.find(c => c.id === payout.contract_id)).catch(() => null);
+      // Fetch the specific contract by ID — works even if completed
+      const contractRes = await get(`${BACKEND}/api/contracts/${payout.contract_id}`).catch(() => null);
+      const contract = contractRes?.data?.contract
+        || { id: payout.contract_id, type: payout.contract_type || 'loss', target_torn_name: 'Unknown', target_torn_id: '0' };
       await sendPayoutNotification(
-        { id: payout.claim_id, seller_torn_id: payout.seller_torn_id, payout_amount: payout.amount, quantity_claimed: '?' },
-        contract || { id: payout.contract_id, type: payout.contract_type || 'loss', target_torn_name: 'Unknown', target_torn_id: '0' },
+        { id: payout.claim_id, seller_torn_id: payout.seller_torn_id, payout_amount: payout.amount, quantity_claimed: payout.quantity_claimed ?? '?' },
+        contract,
         payout.seller_torn_id, payout.id
       );
       notifiedPayouts.add(payout.id);
@@ -348,6 +396,7 @@ client.once(Events.ClientReady, async () => {
   await postBecomeSeller();
   await refreshAllContractEmbeds();
   await refreshFlightEmbed();
+  await refreshLeaderboard();
   await initChannels(client);
   setInterval(pollPayouts,        30000);
   setInterval(refreshFlightEmbed, 15 * 60000); // matches worker update frequency
@@ -529,6 +578,7 @@ async function handleSlash(interaction) {
     const result   = await api.markPayoutSent(payoutId);
     if (!result.success) return interaction.editReply({ content: `❌ ${result.error}` });
     await interaction.editReply({ content: `✅ Payout #${payoutId} marked as sent.` });
+    refreshLeaderboard().catch(() => {});
     if (payoutMessages.has(payoutId)) {
       try {
         const { channelId, messageId } = payoutMessages.get(payoutId);
@@ -560,11 +610,11 @@ async function handleSlash(interaction) {
   if (cmd === 'admin-contract') {
     if (interaction.user.id !== ADMIN_DISCORD_ID) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     return interaction.showModal(modal('modal_admin_contract', 'Create Contract (Admin)',
-      textInput('type',            'Type: loss / bounty / escape',  { placeholder: 'loss' }),
-      textInput('target_torn_id',  'Target Torn ID'),
-      textInput('target_torn_name','Target Torn Name'),
-      textInput('quantity',        'Total Units',                   { placeholder: '10' }),
-      textInput('price_per_unit',  'Price Per Unit ($)',            { placeholder: '300000' })
+      textInput('type',           'Type: loss / bounty / escape',          { placeholder: 'loss' }),
+      textInput('target_torn_id', 'Target Torn ID',                        { placeholder: '4042794' }),
+      textInput('quantity',       'Total Units',                           { placeholder: '10' }),
+      textInput('price_per_unit', 'Price Per Unit ($)',                    { placeholder: '300000' }),
+      textInput('bounty_amount',  'Bounty Amount (bounty only, else 0)',   { placeholder: '0', required: false })
     ));
   }
 
@@ -577,6 +627,27 @@ async function handleSlash(interaction) {
     }, { timeout: 10000 });
     if (!result) return interaction.editReply({ content: '❌ Request failed.' });
     return interaction.editReply({ content: `✅ Claim #${claimId} force-approved.\nPayout: **$${Number(result.data.payout_amount).toLocaleString()}** queued.` });
+  }
+
+  if (cmd === 'leaderboard') {
+    await interaction.deferReply({ ephemeral: false });
+    const res = await get(`${BACKEND}/api/users/leaderboard`);
+    if (!res?.data?.success || !res.data.leaderboard?.length) {
+      return interaction.editReply({ content: '📭 No earnings data yet.' });
+    }
+    const medals = ['🥇','🥈','🥉','4️⃣','5️⃣'];
+    const lines = res.data.leaderboard.map((u, i) =>
+      `${medals[i]} **${u.torn_name || `User [${u.torn_id}]`}** — ${formatMoney(u.lifetime_earned)} earned · ${u.completed_claims} claims`
+    );
+    return interaction.editReply({
+      embeds: [{
+        color: 0xF1C40F,
+        title: '🏆 NuttHub Leaderboard — Top 5 Earners',
+        description: lines.join('\n'),
+        footer: { text: 'Based on all paid-out earnings · Nuttzar Marketplace' },
+        timestamp: new Date().toISOString(),
+      }],
+    });
   }
 
   if (cmd === 'testapi') {
@@ -658,19 +729,37 @@ async function handleModal(interaction) {
 
   if (id === 'modal_admin_contract') {
     await interaction.deferReply({ ephemeral: true });
-    const type  = field('type').toLowerCase();
-    const qty   = parseInt(field('quantity'));
-    const price = parseInt(field('price_per_unit'));
+    const type         = field('type').toLowerCase();
+    const targetTornId = field('target_torn_id').trim();
+    const qty          = parseInt(field('quantity'));
+    const price        = parseInt(field('price_per_unit'));
+    const bountyAmt    = parseInt(field('bounty_amount') || '0') || 0;
     if (!['loss','bounty','escape'].includes(type)) return interaction.editReply({ content: '❌ Type must be: loss, bounty, or escape.' });
     if (isNaN(qty)   || qty < 1)   return interaction.editReply({ content: '❌ Invalid quantity.' });
     if (isNaN(price) || price < 1) return interaction.editReply({ content: '❌ Invalid price.' });
+    if (type === 'bounty' && bountyAmt < 1) return interaction.editReply({ content: '❌ Bounty amount required for bounty contracts.' });
+
+    // Auto-fetch target name from Torn API
+    const apiKey = process.env.ADMIN_API_KEY;
+    let targetName = `User [${targetTornId}]`;
+    if (apiKey) {
+      const tornRes = await get(`https://api.torn.com/v2/user/${targetTornId}?fields=name&key=${apiKey}`, { timeout: 5000 });
+      if (tornRes?.data?.name) targetName = tornRes.data.name;
+    }
+
     const res = await post(`${BACKEND}/api/contracts/test-seed`, {
-      internal_key: process.env.INTERNAL_API_KEY,
-      type, target_torn_id: field('target_torn_id'), target_torn_name: field('target_torn_name'),
-      buyer_torn_id: ADMIN_TORN_ID, quantity_total: qty, price_per_unit: price, status: 'active',
+      internal_key:     process.env.INTERNAL_API_KEY,
+      type,
+      target_torn_id:   targetTornId,
+      target_torn_name: targetName,
+      buyer_torn_id:    ADMIN_TORN_ID,
+      quantity_total:   qty,
+      price_per_unit:   price,
+      bounty_amount:    bountyAmt,
+      status:           'active',
     }, { timeout: 10000 });
     if (!res) return interaction.editReply({ content: '❌ Failed to create contract.' });
-    await interaction.editReply({ content: `✅ Contract #${res.data.contract.id} created — **${type}** · ${qty} units · $${Number(price).toLocaleString()}/unit` });
+    await interaction.editReply({ content: `✅ Contract #${res.data.contract.id} created — **${type}** · ${qty} units · $${Number(price).toLocaleString()}/unit · Target: **${targetName}**` });
     await postContractEmbed(res.data.contract);
     return;
   }
@@ -811,7 +900,7 @@ async function handleButton(interaction) {
       const c  = cr.contracts?.find(c => c.id === result.claim.contract_id);
       if (!c || c.status === 'completed') {
         await deleteContractEmbed(result.claim.contract_id);
-        await ensurePlaceholder(result.claim.contract_type || 'loss');
+        await ensurePlaceholder(result.claim?.type || result.claim?.contract_type || 'loss');
       } else {
         await updateContractEmbed(result.claim.contract_id);
       }

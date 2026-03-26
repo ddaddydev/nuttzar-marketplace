@@ -26,6 +26,25 @@ router.post('/', internalAuth, async (req, res) => {
   } catch (e) { res.status(400).json({ success: false, error: e.message }); }
 });
 
+// ── GET /api/claims/active — all active claims (admin) ────────────────────────
+// Bug #5: Added this route BEFORE /:id so Express doesn't match "active" as an id
+// Protected: internal key required
+router.get('/active', internalAuth, (req, res) => {
+  try {
+    const db = getDb();
+    const claims = db.prepare(`
+      SELECT cl.id, cl.contract_id, cl.seller_torn_id, cl.seller_discord_id,
+             cl.quantity_claimed, cl.payout_amount, cl.claimed_at, cl.expires_at,
+             co.type, co.target_torn_name, co.target_torn_id
+      FROM claims cl
+      JOIN contracts co ON cl.contract_id = co.id
+      WHERE cl.status = 'active'
+      ORDER BY cl.expires_at ASC
+    `).all();
+    res.json({ success: true, claims });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
 // ── GET /api/claims/:id ───────────────────────────────────────────────────────
 // Protected: internal key required
 router.get('/:id', internalAuth, (req, res) => {

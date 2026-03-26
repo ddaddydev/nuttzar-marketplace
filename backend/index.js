@@ -129,8 +129,9 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date()
 // ── Cron: expire stale claims every 2 minutes ─────────────────────────────────
 cron.schedule('*/2 * * * *', () => {
   try {
-    const { expirestaleClaims } = require('./services/contracts');
-    const expired = expirestaleClaims();
+    // Bug #1 fix: was `expirestaleClaims` (wrong casing, always threw TypeError)
+    const { expireStaleClaims } = require('./services/contracts');
+    const expired = expireStaleClaims();
     if (expired.length) {
       console.log(`[CRON] Expired ${expired.length} stale claim(s)`);
       if (global.discordBot) {

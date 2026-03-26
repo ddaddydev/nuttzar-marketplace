@@ -16,13 +16,16 @@ async function safe(fn) {
   catch (e) { return { success: false, error: e.response?.data?.error || e.message }; }
 }
 
-const verifyUser        = (apiKey, discordId)                          => safe(() => api.post('/api/users/verify', { api_key: apiKey, discord_id: discordId }).then(r => r.data));
-const getActiveClaims   = tornId                                        => safe(() => api.get(`/api/users/${tornId}/claims`).then(r => r.data));
-const getBalance        = tornId                                        => safe(() => api.get(`/api/users/${tornId}/balance`).then(r => r.data));
+const verifyUser         = (apiKey, discordId)                          => safe(() => api.post('/api/users/verify', { api_key: apiKey, discord_id: discordId }).then(r => r.data));
+const getActiveClaims    = tornId                                       => safe(() => api.get(`/api/users/${tornId}/claims`).then(r => r.data));
+const getBalance         = tornId                                       => safe(() => api.get(`/api/users/${tornId}/balance`).then(r => r.data));
 const getActiveContracts = type                                         => safe(() => api.get('/api/contracts', { params: type ? { type } : {} }).then(r => r.data));
-const createClaim       = (contractId, sellerTornId, discordId, qty)   => safe(() => api.post('/api/claims', { contract_id: contractId, seller_torn_id: sellerTornId, seller_discord_id: discordId, quantity_claimed: qty }).then(r => r.data));
-const completeClaim     = claimId                                       => safe(() => api.post(`/api/claims/${claimId}/complete`).then(r => r.data));
-const markPayoutSent    = payoutId                                      => safe(() => api.post(`/api/claims/payouts/${payoutId}/sent`).then(r => r.data));
-const getPendingPayouts = ()                                            => safe(() => api.get('/api/claims/payouts/pending').then(r => r.data));
+const createClaim        = (contractId, sellerTornId, discordId, qty)   => safe(() => api.post('/api/claims', { contract_id: contractId, seller_torn_id: sellerTornId, seller_discord_id: discordId, quantity_claimed: qty }).then(r => r.data));
+const completeClaim      = claimId                                      => safe(() => api.post(`/api/claims/${claimId}/complete`).then(r => r.data));
+const markPayoutSent     = payoutId                                     => safe(() => api.post(`/api/claims/payouts/${payoutId}/sent`).then(r => r.data));
+const getPendingPayouts  = ()                                           => safe(() => api.get('/api/claims/payouts/pending').then(r => r.data));
 
-module.exports = { verifyUser, getActiveClaims, getBalance, getActiveContracts, createClaim, completeClaim, markPayoutSent, getPendingPayouts };
+// Bug #5: Added — fetches all active claims for admin /admin-claims command
+const getAllActiveClaims  = ()                                           => safe(() => api.get('/api/claims/active').then(r => r.data));
+
+module.exports = { verifyUser, getActiveClaims, getBalance, getActiveContracts, createClaim, completeClaim, markPayoutSent, getPendingPayouts, getAllActiveClaims };

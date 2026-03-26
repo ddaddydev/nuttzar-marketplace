@@ -43,6 +43,7 @@ const CHANNEL_IDS = {
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const contractMessages    = new Map();
+const pingMessages        = new Map(); // Bug #3: contractId → { channelId, messageId }
 const payoutMessages      = new Map();
 const placeholderMessages = new Map();
 const notifiedPayouts     = new Set();
@@ -64,8 +65,16 @@ const client = new Client({
 // ── Shared helpers ────────────────────────────────────────────────────────────
 const _ikey = () => ({ 'x-internal-key': process.env.INTERNAL_API_KEY || '' });
 const get   = (url, opts = {})       => axios.get(url,  { timeout: 5000, headers: _ikey(), ...opts }).catch(() => null);
-const post  = (url, data, opts = {}) => axios.post(url, data,  { timeout: 5000, headers: _ikey(), ...opts }).catch(() => null);
-const patch = (url, data, opts = {}) => axios.patch(url, data, { timeout: 5000, headers: _ikey(), ...opts }).catch(() => null);
+
+// Bug #4 fix: Preserve HTTP error responses so callers can show the real error
+// Previously: .catch(() => null) — swallowed ALL errors including 4xx/5xx with useful messages
+const post  = (url, data, opts = {}) =>
+  axios.post(url, data,  { timeout: 5000, headers: _ikey(), ...opts })
+    .catch(e => e.response || null);
+
+const patch = (url, data, opts = {}) =>
+  axios.patch(url, data, { timeout: 5000, headers: _ikey(), ...opts })
+    .catch(e => e.response || null);
 
 async function getTornId(discordId) {
   const r = await get(`${BACKEND}/api/users/by-discord/${discordId}`);
@@ -317,6 +326,7 @@ async function sendPayoutNotification(fakeClaim, fakeContract, sellerTornId, pay
 }
 
 // ── Contract embeds ───────────────────────────────────────────────────────────
+// Bug #3 fix: Track ping messages so they can be deleted when contract completes
 async function postContractEmbed(contract) {
   const channelId = CHANNEL_IDS[contract.type];
   if (!channelId) return;
@@ -337,7 +347,11 @@ async function postContractEmbed(contract) {
 
   const role = ch.guild.roles.cache.get(VERIFIED_SELLER_ROLE_ID);
   const lbl  = contract.type.charAt(0).toUpperCase() + contract.type.slice(1);
-  await ch.send(`${role ? `<@&${role.id}> ` : ''}🆕 New **${lbl}** contract — $${Number(contract.price_per_unit).toLocaleString()}/unit`);
+
+  // Bug #3 fix: Track the ping message so we can delete it later
+  const pingMsg = await ch.send(`${role ? `<@&${role.id}> ` : ''}🆕 New **${lbl}** contract — $${Number(contract.price_per_unit).toLocaleString()}/unit`);
+  pingMessages.set(contract.id, { channelId, messageId: pingMsg.id });
+
   const msg = await ch.send({ embeds: [embed], components: [buttons] });
   contractMessages.set(contract.id, { channelId, messageId: msg.id });
 }
@@ -348,24 +362,40 @@ async function updateContractEmbed(contractId) {
   if (contract) await postContractEmbed(contract);
 }
 
+// Bug #3 fix: Also delete the ping message when deleting contract embed
 async function deleteContractEmbed(contractId) {
-  if (!contractMessages.has(contractId)) return;
-  try {
-    const { channelId, messageId } = contractMessages.get(contractId);
-    const ch  = await client.channels.fetch(channelId).catch(() => null);
-    const msg = await ch?.messages.fetch(messageId).catch(() => null);
-    if (msg) await msg.delete();
+  // Delete embed
+  if (contractMessages.has(contractId)) {
+    try {
+      const { channelId, messageId } = contractMessages.get(contractId);
+      const ch  = await client.channels.fetch(channelId).catch(() => null);
+      const msg = await ch?.messages.fetch(messageId).catch(() => null);
+      if (msg) await msg.delete();
+    } catch (e) { console.error('[BOT] deleteContractEmbed embed:', e.message); }
     contractMessages.delete(contractId);
-  } catch (e) { console.error('[BOT] deleteContractEmbed:', e.message); }
+  }
+  // Bug #3 fix: Also delete the ping message
+  if (pingMessages.has(contractId)) {
+    try {
+      const { channelId, messageId } = pingMessages.get(contractId);
+      const ch  = await client.channels.fetch(channelId).catch(() => null);
+      const msg = await ch?.messages.fetch(messageId).catch(() => null);
+      if (msg) await msg.delete();
+    } catch (e) { console.error('[BOT] deleteContractEmbed ping:', e.message); }
+    pingMessages.delete(contractId);
+  }
 }
 
+// Bug #2 fix: Don't post placeholder if API call failed — we don't know the real state
 async function ensurePlaceholder(type) {
   const channelId = CHANNEL_IDS[type];
   if (!channelId || placeholderMessages.has(type)) return;
   const ch     = await client.channels.fetch(channelId).catch(() => null);
   if (!ch) return;
   const result = await api.getActiveContracts(type);
-  if (result.success && result.contracts?.length) return;
+  // Bug #2 fix: If API failed (result.success is false/undefined), bail out instead of posting placeholder
+  if (!result || !result.success) return;
+  if (result.contracts?.length) return;
   const msg = await ch.send({ embeds: [buildNoContractsEmbed(type)] });
   placeholderMessages.set(type, msg.id);
 }
@@ -508,7 +538,8 @@ async function handleSlash(interaction) {
     if (!xanaxItems.length) return interaction.editReply({ content: '📭 No Xanax data available right now.' });
 
     const lines = xanaxItems.map(item => {
-      const flag      = CC_FLAGS[item.country] || '🌍';
+      const flag      = ({ mex:'🇲🇽', cay:'🇰🇾', can:'🇨🇦', haw:'🌺', uk:'🇬🇧', uni:'🇬🇧', arg:'🇦🇷', swi:'🇨🇭', jap:'🇯🇵', chi:'🇨🇳', uae:'🇦🇪', sou:'🇿🇦' })[item.country] || '🌍';
+      const CC_NAMES  = { mex:'Mexico', cay:'Cayman Islands', can:'Canada', haw:'Hawaii', uk:'United Kingdom', uni:'United Kingdom', arg:'Argentina', swi:'Switzerland', jap:'Japan', chi:'China', uae:'UAE', sou:'South Africa' };
       const pilotMins = FLIGHT_MINS[item.country]?.airstrip ?? '?';
       const landTct   = typeof pilotMins === 'number'
         ? new Date(now + pilotMins * 60000).toUTCString().match(/(\d{2}:\d{2})/)?.[1] || '?'
@@ -622,7 +653,11 @@ async function handleSlash(interaction) {
       const res = await post(`${BACKEND}/api/claims/${claimId}/cancel`, {
         internal_key: process.env.INTERNAL_API_KEY,
       }, { timeout: 8000 });
-      if (!res?.data?.success) return interaction.editReply({ content: `❌ Failed: ${res?.data?.error || 'Unknown error'}` });
+      if (!res?.data?.success) {
+        // Bug #4 fix: surface actual error from backend
+        const errMsg = res?.data?.error || 'Unknown error';
+        return interaction.editReply({ content: `❌ Failed: ${errMsg}` });
+      }
       if (res.data.contract_id) await updateContractEmbed(res.data.contract_id).catch(() => {});
       return interaction.editReply({ content: `✅ Claim #${claimId} cancelled. Units returned to pool.` });
     }
@@ -651,7 +686,11 @@ async function handleSlash(interaction) {
     const res = await post(`${BACKEND}/api/contracts/${contractId}/cancel`, {
       internal_key: process.env.INTERNAL_API_KEY,
     }, { timeout: 10000 });
-    if (!res?.data?.success) return interaction.editReply({ content: `❌ Failed to cancel: ${res?.data?.error || 'Unknown error'}` });
+    if (!res?.data?.success) {
+      // Bug #4 fix: surface actual error from backend
+      const errMsg = res?.data?.error || 'Unknown error';
+      return interaction.editReply({ content: `❌ Failed to cancel: ${errMsg}` });
+    }
     await deleteContractEmbed(contractId);
     await ensurePlaceholder(res.data.type || 'loss');
     return interaction.editReply({ content: `✅ Contract #${contractId} cancelled. All active claims have been expired and units returned.` });
@@ -664,8 +703,56 @@ async function handleSlash(interaction) {
     const result  = await post(`${BACKEND}/api/claims/${claimId}/test-complete`, {
       internal_key: process.env.INTERNAL_API_KEY, verified_count: null,
     }, { timeout: 10000 });
-    if (!result) return interaction.editReply({ content: '❌ Request failed.' });
+    if (!result?.data?.success) {
+      // Bug #4 fix: surface actual error from backend
+      const errMsg = result?.data?.error || 'Request failed';
+      return interaction.editReply({ content: `❌ ${errMsg}` });
+    }
     return interaction.editReply({ content: `✅ Claim #${claimId} force-approved.\nPayout: **$${Number(result.data.payout_amount).toLocaleString()}** queued.` });
+  }
+
+  // Bug #5: /admin-claims command — view all active claims with IDs
+  if (cmd === 'admin-claims') {
+    if (interaction.user.id !== ADMIN_DISCORD_ID)
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+
+    const result = await api.getAllActiveClaims();
+    if (!result?.success) return interaction.editReply({ content: `❌ ${result?.error || 'Failed to fetch claims'}` });
+
+    let claims = result.claims || [];
+    const filterId = interaction.options.getInteger('contract_id');
+    if (filterId) claims = claims.filter(c => c.contract_id === filterId);
+
+    if (!claims.length) {
+      return interaction.editReply({ content: filterId
+        ? `📋 No active claims on Contract #${filterId}.`
+        : '📋 No active claims right now.' });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const lines = claims.map(c => {
+      const minsLeft = Math.max(0, Math.floor((c.expires_at - now) / 60));
+      const expStr   = minsLeft > 0 ? `⏱️ ${minsLeft}m` : '⚠️ EXPIRED';
+      return `**Claim #${c.id}** · Contract #${c.contract_id} (${c.type})\n` +
+             `　Seller: \`${c.seller_torn_id}\` · Target: ${c.target_torn_name} [${c.target_torn_id}]\n` +
+             `　${c.quantity_claimed} unit(s) · 💰 ${formatMoney(c.payout_amount)} · ${expStr}`;
+    });
+
+    // Chunk if needed (Discord 2000 char limit)
+    const chunks = [];
+    let chunk = '';
+    for (const line of lines) {
+      if ((chunk + '\n\n' + line).length > 1800) { chunks.push(chunk); chunk = line; }
+      else chunk = chunk ? chunk + '\n\n' + line : line;
+    }
+    if (chunk) chunks.push(chunk);
+
+    await interaction.editReply({ content: `**Active Claims (${claims.length}):**\n\n${chunks[0]}` });
+    for (const extra of chunks.slice(1)) {
+      await interaction.followUp({ content: extra, ephemeral: true });
+    }
+    return;
   }
 
   if (cmd === 'testapi') {
@@ -777,7 +864,11 @@ async function handleModal(interaction) {
       bounty_amount:    bountyAmt,
       status:           'active',
     }, { timeout: 10000 });
-    if (!res) return interaction.editReply({ content: '❌ Failed to create contract.' });
+    // Bug #4 fix: surface actual backend error instead of generic "Failed to create contract"
+    if (!res?.data?.success) {
+      const errMsg = res?.data?.error || 'Server error — check Railway logs';
+      return interaction.editReply({ content: `❌ Failed to create contract: ${errMsg}` });
+    }
     await interaction.editReply({ content: `✅ Contract #${res.data.contract.id} created — **${type}** · ${qty} units · $${Number(price).toLocaleString()}/unit · Target: **${targetName}**` });
     await postContractEmbed(res.data.contract);
     return;

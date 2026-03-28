@@ -419,6 +419,59 @@ async function refreshAllContractEmbeds() {
   } catch (e) { console.error('[BOT] refreshAllContractEmbeds:', e.message); }
 }
 
+// ── Shared: create contract via backend ───────────────────────────────────────
+// Used by all admin-loss, admin-bounty, admin-escape modal handlers
+async function adminCreateContract(interaction, type, targetTornId, qty, price, bountyAmt = 0) {
+  const apiKey = process.env.ADMIN_API_KEY;
+  let targetName = null;
+  if (apiKey) {
+    const tornRes = await get(`https://api.torn.com/user/${targetTornId}?selections=basic&key=${apiKey}`, { timeout: 8000 });
+    if (tornRes?.data?.name) targetName = tornRes.data.name;
+  }
+  if (!targetName) {
+    return interaction.editReply({ content: '❌ Could not fetch target name from Torn. Check the Torn ID and try again.' });
+  }
+
+  const body = {
+    internal_key:     process.env.INTERNAL_API_KEY,
+    type,
+    target_torn_id:   targetTornId,
+    target_torn_name: targetName,
+    buyer_torn_id:    ADMIN_TORN_ID,
+    quantity_total:   qty,
+    price_per_unit:   price,
+    bounty_amount:    bountyAmt,
+    status:           'active',
+  };
+
+  console.log(`[ADMIN] Creating ${type} contract:`, JSON.stringify({ type, targetTornId, targetName, qty, price, bountyAmt }));
+
+  const res = await post(`${BACKEND}/api/contracts/test-seed`, body, { timeout: 15000 });
+
+  console.log(`[ADMIN] test-seed response:`, JSON.stringify({
+    status:  res?.status,
+    success: res?.data?.success,
+    error:   res?.data?.error,
+    hasContract: !!res?.data?.contract,
+  }));
+
+  if (!res) {
+    return interaction.editReply({ content: '❌ Backend did not respond (timeout or connection error). Check Railway logs.' });
+  }
+
+  if (!res.data?.success) {
+    const errMsg = res.data?.error || `HTTP ${res.status} — no error message returned`;
+    return interaction.editReply({ content: `❌ Failed to create contract: ${errMsg}` });
+  }
+
+  const contract = res.data.contract;
+  const bountyStr = type === 'bounty' ? ` · Bounty: $${Number(bountyAmt).toLocaleString()}` : '';
+  await interaction.editReply({
+    content: `✅ Contract #${contract.id} created — **${type}** · ${qty} units · $${Number(price).toLocaleString()}/unit · Target: **${targetName}**${bountyStr}`,
+  });
+  await postContractEmbed(contract);
+}
+
 // ── Ready ─────────────────────────────────────────────────────────────────────
 client.once(Events.ClientReady, async () => {
   console.log(`[BOT] Logged in as ${client.user.tag}`);
@@ -668,14 +721,32 @@ async function handleSlash(interaction) {
     });
   }
 
-  if (cmd === 'admin-contract') {
+  // ── Split admin contract commands ───────────────────────────────────────────
+  if (cmd === 'admin-loss') {
     if (interaction.user.id !== ADMIN_DISCORD_ID) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
-    return interaction.showModal(modal('modal_admin_contract', 'Create Contract (Admin)',
-      textInput('type',           'Type: loss / bounty / escape',          { placeholder: 'loss' }),
-      textInput('target_torn_id', 'Target Torn ID',                        { placeholder: '4042794' }),
-      textInput('quantity',       'Total Units',                           { placeholder: '10' }),
-      textInput('price_per_unit', 'Price Per Unit ($)',                    { placeholder: '300000' }),
-      textInput('bounty_amount',  'Bounty Amount (bounty only, else 0)',   { placeholder: '0', required: false })
+    return interaction.showModal(modal('modal_admin_loss', 'Create Loss Contract',
+      textInput('target_torn_id', 'Target Torn ID',    { placeholder: '4042794' }),
+      textInput('quantity',       'Total Units',        { placeholder: '10' }),
+      textInput('price_per_unit', 'Price Per Unit ($)', { placeholder: '300000 (min 250,000)' })
+    ));
+  }
+
+  if (cmd === 'admin-escape') {
+    if (interaction.user.id !== ADMIN_DISCORD_ID) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    return interaction.showModal(modal('modal_admin_escape', 'Create Escape Contract',
+      textInput('target_torn_id', 'Target Torn ID',    { placeholder: '4042794' }),
+      textInput('quantity',       'Total Units',        { placeholder: '10' }),
+      textInput('price_per_unit', 'Price Per Unit ($)', { placeholder: '400000 (min 350,000)' })
+    ));
+  }
+
+  if (cmd === 'admin-bounty') {
+    if (interaction.user.id !== ADMIN_DISCORD_ID) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    return interaction.showModal(modal('modal_admin_bounty', 'Create Bounty Contract',
+      textInput('target_torn_id', 'Target Torn ID',                       { placeholder: '4042794' }),
+      textInput('quantity',       'Number of Bounty Slots',               { placeholder: '5' }),
+      textInput('price_per_unit', 'Seller Payout Per Slot ($)',           { placeholder: '100000 (min 50,000)' }),
+      textInput('bounty_amount',  'Bounty Amount (reward on each slot)',  { placeholder: '1000000' })
     ));
   }
 
@@ -832,46 +903,41 @@ async function handleModal(interaction) {
     });
   }
 
-  if (id === 'modal_admin_contract') {
+  // ── Split modal handlers for each contract type ─────────────────────────────
+
+  if (id === 'modal_admin_loss') {
     await interaction.deferReply({ ephemeral: true });
-    const type         = field('type').toLowerCase();
-    const targetTornId = field('target_torn_id').trim();
-    const qty          = parseInt(field('quantity'));
-    const price        = parseInt(field('price_per_unit'));
-    const bountyAmt    = parseInt(field('bounty_amount') || '0') || 0;
-    if (!['loss','bounty','escape'].includes(type)) return interaction.editReply({ content: '❌ Type must be: loss, bounty, or escape.' });
+    const targetTornId = field('target_torn_id');
+    const qty   = parseInt(field('quantity'));
+    const price = parseInt(field('price_per_unit'));
     if (isNaN(qty)   || qty < 1)   return interaction.editReply({ content: '❌ Invalid quantity.' });
     if (isNaN(price) || price < 1) return interaction.editReply({ content: '❌ Invalid price.' });
-    if (type === 'bounty' && bountyAmt < 1) return interaction.editReply({ content: '❌ Bounty amount required for bounty contracts.' });
+    if (price < 250000)            return interaction.editReply({ content: '❌ Minimum price for loss is $250,000.' });
+    return adminCreateContract(interaction, 'loss', targetTornId, qty, price, 0);
+  }
 
-    // Auto-fetch target name from Torn API
-    const apiKey = process.env.ADMIN_API_KEY;
-    let targetName = null;
-    if (apiKey) {
-      const tornRes = await get(`https://api.torn.com/user/${targetTornId}?selections=basic&key=${apiKey}`, { timeout: 5000 });
-      if (tornRes?.data?.name) targetName = tornRes.data.name;
-    }
-    if (!targetName) return interaction.editReply({ content: '❌ Could not fetch target name from Torn. Check the Torn ID and try again.' });
+  if (id === 'modal_admin_escape') {
+    await interaction.deferReply({ ephemeral: true });
+    const targetTornId = field('target_torn_id');
+    const qty   = parseInt(field('quantity'));
+    const price = parseInt(field('price_per_unit'));
+    if (isNaN(qty)   || qty < 1)   return interaction.editReply({ content: '❌ Invalid quantity.' });
+    if (isNaN(price) || price < 1) return interaction.editReply({ content: '❌ Invalid price.' });
+    if (price < 350000)            return interaction.editReply({ content: '❌ Minimum price for escape is $350,000.' });
+    return adminCreateContract(interaction, 'escape', targetTornId, qty, price, 0);
+  }
 
-    const res = await post(`${BACKEND}/api/contracts/test-seed`, {
-      internal_key:     process.env.INTERNAL_API_KEY,
-      type,
-      target_torn_id:   targetTornId,
-      target_torn_name: targetName,
-      buyer_torn_id:    ADMIN_TORN_ID,
-      quantity_total:   qty,
-      price_per_unit:   price,
-      bounty_amount:    bountyAmt,
-      status:           'active',
-    }, { timeout: 10000 });
-    // Bug #4 fix: surface actual backend error instead of generic "Failed to create contract"
-    if (!res?.data?.success) {
-      const errMsg = res?.data?.error || 'Server error — check Railway logs';
-      return interaction.editReply({ content: `❌ Failed to create contract: ${errMsg}` });
-    }
-    await interaction.editReply({ content: `✅ Contract #${res.data.contract.id} created — **${type}** · ${qty} units · $${Number(price).toLocaleString()}/unit · Target: **${targetName}**` });
-    await postContractEmbed(res.data.contract);
-    return;
+  if (id === 'modal_admin_bounty') {
+    await interaction.deferReply({ ephemeral: true });
+    const targetTornId = field('target_torn_id');
+    const qty       = parseInt(field('quantity'));
+    const price     = parseInt(field('price_per_unit'));
+    const bountyAmt = parseInt(field('bounty_amount'));
+    if (isNaN(qty)       || qty < 1)       return interaction.editReply({ content: '❌ Invalid quantity.' });
+    if (isNaN(price)     || price < 1)     return interaction.editReply({ content: '❌ Invalid price.' });
+    if (price < 50000)                     return interaction.editReply({ content: '❌ Minimum price for bounty is $50,000.' });
+    if (isNaN(bountyAmt) || bountyAmt < 1) return interaction.editReply({ content: '❌ Bounty amount is required and must be at least $1.' });
+    return adminCreateContract(interaction, 'bounty', targetTornId, qty, price, bountyAmt);
   }
 
   if (id.startsWith('modal_claim_')) {

@@ -18,9 +18,18 @@ const commands = [
     .addIntegerOption(o => o.setName('claim_id').setDescription('Claim ID').setRequired(true)),
   new SlashCommandBuilder().setName('markpaid').setDescription('[Admin] Mark a payout as sent')
     .addIntegerOption(o => o.setName('payout_id').setDescription('Payout ID').setRequired(true)),
-  new SlashCommandBuilder().setName('admin-contract').setDescription('[Admin] Manually create a contract'),
+
+  // Split admin contract creation into 3 separate commands
+  new SlashCommandBuilder().setName('admin-loss').setDescription('[Admin] Create a loss contract'),
+  new SlashCommandBuilder().setName('admin-escape').setDescription('[Admin] Create an escape contract'),
+  new SlashCommandBuilder().setName('admin-bounty').setDescription('[Admin] Create a bounty contract'),
+
   new SlashCommandBuilder().setName('admin-verify-claim').setDescription('[Admin] Force-approve a claim')
     .addIntegerOption(o => o.setName('claim_id').setDescription('Claim ID to approve').setRequired(true)),
+  new SlashCommandBuilder().setName('admin-claims').setDescription('[Admin] View all active claims with IDs')
+    .addIntegerOption(o => o.setName('contract_id')
+      .setDescription('Filter by contract ID (optional)')
+      .setRequired(false)),
   new SlashCommandBuilder().setName('testapi').setDescription('[Admin] Test Torn API connectivity'),
   new SlashCommandBuilder().setName('bestarrival').setDescription('Get best items for a specific flight time')
     .addIntegerOption(o => o.setName('minutes').setDescription('Your flight time in minutes').setRequired(true)
@@ -28,11 +37,6 @@ const commands = [
   new SlashCommandBuilder().setName('xanax').setDescription('Get Xanax stock status across all countries sent to your DMs'),
   new SlashCommandBuilder().setName('admin-cancel-contract').setDescription('[Admin] Cancel a contract and expire all active claims')
     .addIntegerOption(o => o.setName('contract_id').setDescription('Contract ID to cancel').setRequired(true)),
-  // Bug #5: Added admin-claims command for viewing active claims with IDs
-  new SlashCommandBuilder().setName('admin-claims').setDescription('[Admin] View all active claims with IDs')
-    .addIntegerOption(o => o.setName('contract_id')
-      .setDescription('Filter by contract ID (optional)')
-      .setRequired(false)),
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);

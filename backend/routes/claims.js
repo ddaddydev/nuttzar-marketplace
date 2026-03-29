@@ -5,7 +5,7 @@ const {
   claimUnits, completeClaim, completeClaimPartial, getClaim,
   getPendingPayouts, markPayoutSent, getContract,
 } = require('../services/contracts');
-const { verifyAttackLog, verifyEscapeLog } = require('../services/tornApi');
+const { verifyAttackLog, verifyEscapeLog, verifyBountyPlacement } = require('../services/tornApi');
 const { decrypt } = require('../services/encryption');
 const { getDb }   = require('../db/schema');
 
@@ -77,7 +77,59 @@ router.post('/:id/complete', internalAuth, async (req, res) => {
     const apiKey = decrypt(seller.encrypted_api_key);
 
     let verification;
-    if (contract.type === 'loss' || contract.type === 'bounty') {
+    if (contract.type === 'bounty') {
+      // Bounty: check target's active bounties for matching amount (uses admin key, not seller key)
+      verification = await verifyBountyPlacement(contract.target_torn_id, contract.bounty_amount, claim.quantity_claimed);
+
+      const { count, needed } = verification;
+
+      if (verification.error) {
+        return res.status(400).json({ success: false, error: `Bounty verification error: ${verification.error}` });
+      }
+
+      if (count === 0) {
+        return res.status(400).json({
+          success: false,
+          error: `No matching bounties found on target [${contract.target_torn_id}]. ` +
+                 `Expected ${needed} bounty/bounties of $${Number(contract.bounty_amount).toLocaleString()}. ` +
+                 `Found ${verification.totalBounties || 0} total active bounties on target — none match the amount.`,
+        });
+      }
+
+      if (count < needed) {
+        // Partial bounty — credit what matched
+        const result = completeClaimPartial(claimId, count);
+        if (global.discordBot) {
+          global.discordBot.emit('claim_alert', {
+            type: 'partial', claim, contract,
+            credited: result.credited, returned: result.returned,
+            message: `📦 Partial bounty by **${claim.seller_torn_id}** — found **${result.credited}/${needed}** matching bounties. ` +
+                     `**${result.returned}** units returned to pool. Payout: $${Number(result.payout_amount).toLocaleString()}.`,
+          });
+          global.discordBot.emit('payout_ready', {
+            claim: result.claim, contract: result.contract, seller_torn_id: claim.seller_torn_id,
+          });
+        }
+        return res.json({
+          success: true, partial: true,
+          credited: result.credited, returned: result.returned,
+          payout_amount: result.payout_amount, claim: result.claim,
+          message: `Partial: ${result.credited}/${needed} bounties verified. ${result.returned} units returned to pool.`,
+        });
+      }
+
+      // Full bounty completion
+      const result = completeClaim(claimId);
+      if (global.discordBot) {
+        global.discordBot.emit('payout_ready', {
+          claim: result.claim, contract: result.contract, seller_torn_id: claim.seller_torn_id,
+        });
+      }
+      return res.json({ success: true, message: 'Bounty verified! Payout queued.', payout_amount: claim.payout_amount, claim: result.claim });
+    }
+
+    // Loss / Escape verification (attack log based)
+    if (contract.type === 'loss') {
       verification = await verifyAttackLog(apiKey, contract.target_torn_id, claim.quantity_claimed, claim.claimed_at);
     } else if (contract.type === 'escape') {
       verification = await verifyEscapeLog(apiKey, contract.buyer_torn_id, claim.quantity_claimed, claim.claimed_at);

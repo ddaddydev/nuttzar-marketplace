@@ -20,12 +20,6 @@ function buildContractEmbed(contract) {
   const remaining = contract.quantity_remaining;
   const claimed   = total - remaining - completed;
 
-  const len  = 20;
-  const cBars = Math.round((completed / total) * len);
-  const xBars = Math.round((claimed   / total) * len);
-  const oBars = len - cBars - xBars;
-  const bar   = '█'.repeat(cBars) + '▒'.repeat(xBars) + '░'.repeat(oBars);
-
   const embed = new EmbedBuilder()
     .setColor(TYPE_COLORS[contract.type])
     .setTitle(`${emoji}  CONTRACT #${contract.id} — ${typeLabel(contract.type).toUpperCase()}`)
@@ -33,7 +27,7 @@ function buildContractEmbed(contract) {
     .setFooter({ text: 'Nuttzar Marketplace · marketplace.nuttzar.website' });
 
   if (contract.target_torn_name && contract.target_torn_id) {
-    embed.addFields({ name: 'Target', value: `${contract.target_torn_name} [${contract.target_torn_id}]`, inline: true });
+    embed.addFields({ name: 'Target', value: `[${contract.target_torn_name} [${contract.target_torn_id}]](https://www.torn.com/profiles.php?XID=${contract.target_torn_id})`, inline: true });
   }
 
   embed.addFields({
@@ -41,13 +35,25 @@ function buildContractEmbed(contract) {
     value: formatMoney(contract.price_per_unit), inline: true,
   });
 
-  if (contract.type === 'bounty' && contract.bounty_amount > 0) {
-    embed.addFields({ name: 'Bounty Amount', value: formatMoney(contract.bounty_amount), inline: true });
+  // Bounty: show the bounty amount prominently so admin can fast-check
+  if (contract.type === 'bounty') {
+    embed.addFields({
+      name: '💰 Required Bounty Amount',
+      value: `**${formatMoney(contract.bounty_amount)}**\n_Seller must place exactly this amount_`,
+      inline: true,
+    });
   }
 
+  // Simple status line instead of progress bar
+  const statusParts = [];
+  if (completed > 0) statusParts.push(`✅ ${completed} done`);
+  if (claimed > 0)   statusParts.push(`🔒 ${claimed} claimed`);
+  if (remaining > 0) statusParts.push(`🟢 ${remaining} open`);
+  const statusLine = statusParts.join('  •  ') || '—';
+
   embed.addFields(
-    { name: 'Progress', value: `\`${bar}\`\n✅ ${completed} done  •  🔒 ${claimed} claimed  •  🟢 ${remaining} open`, inline: false },
-    { name: 'Status',   value: remaining > 0 ? '🟢 **Open — accepting claims**' : '🔴 **Fully claimed**', inline: false },
+    { name: `Units (${completed}/${total})`, value: statusLine, inline: false },
+    { name: 'Status', value: remaining > 0 ? '🟢 **Open — accepting claims**' : '🔴 **Fully claimed**', inline: false },
   );
 
   return embed;
@@ -67,12 +73,9 @@ function buildClaimDmEmbed(claim, contract) {
   const atkLink = `https://www.torn.com/loader.php?sid=attack&user2ID=${contract.target_torn_id}`;
   const btyLink = `https://www.torn.com/bounties.php?p=add&XID=${contract.target_torn_id}`;
   const instructions = {
-    loss:   `Attack **[${contract.target_torn_name} [${contract.target_torn_id}]](${atkLink})** and **lose** the fight ${claim.quantity_claimed} time(s). Make sure attacks appear in your log.
-🔗 [Attack ${contract.target_torn_name}](${atkLink})`,
-    escape: `The buyer will attack you. You must **escape** ${claim.quantity_claimed} time(s). Requires your DEX to exceed buyer's SPD.
-🔗 [Attack link for ${contract.target_torn_name}](${atkLink})`,
-    bounty: `Place a bounty on **${contract.target_torn_name} [${contract.target_torn_id}]** and fulfill ${claim.quantity_claimed} slot(s).
-🔗 [Add Bounty on ${contract.target_torn_name}](${btyLink})`,
+    loss:   `Attack **[${contract.target_torn_name} [${contract.target_torn_id}]](${atkLink})** and **lose** the fight ${claim.quantity_claimed} time(s). Make sure attacks appear in your log.\n🔗 [Attack ${contract.target_torn_name}](${atkLink})`,
+    escape: `The buyer will attack you. You must **escape** ${claim.quantity_claimed} time(s). Requires your DEX to exceed buyer's SPD.\n🔗 [Attack link for ${contract.target_torn_name}](${atkLink})`,
+    bounty: `Place a bounty of **exactly ${formatMoney(contract.bounty_amount)}** on **${contract.target_torn_name} [${contract.target_torn_id}]** — ${claim.quantity_claimed} time(s).\n⚠️ The bounty amount must match exactly for verification.\n🔗 [Add Bounty on ${contract.target_torn_name}](${btyLink})`,
   };
 
   return new EmbedBuilder()
@@ -83,6 +86,7 @@ function buildClaimDmEmbed(claim, contract) {
       { name: 'Target',              value: `${contract.target_torn_name} [${contract.target_torn_id}]`, inline: true },
       { name: 'Units Claimed',       value: `${claim.quantity_claimed}`,                                 inline: true },
       { name: 'Your Payout',         value: formatMoney(claim.payout_amount),                            inline: true },
+      ...(contract.type === 'bounty' ? [{ name: '💰 Bounty Amount', value: `**${formatMoney(contract.bounty_amount)}** each`, inline: true }] : []),
       { name: '⏱️ Expires',          value: `<t:${claim.expires_at}:R>`,                                 inline: false },
       { name: '📋 Instructions',     value: instructions[contract.type] || '',                            inline: false },
     )

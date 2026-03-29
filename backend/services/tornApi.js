@@ -9,7 +9,7 @@ async function verifyApiKey(apiKey) {
     apiKey = (apiKey || '').trim().replace(/[\r\n\t]/g, '');
     if (!apiKey) return { valid: false, error: 'API key cannot be empty' };
 
-    // Step 1 — confirm key works and get user info (same pattern as every other call in this file)
+    // Step 1 — confirm key works and get user info
     const basicRes = await axios.get(`${BASE}/user/?selections=basic&key=${apiKey}`, { timeout: 8000 });
     if (basicRes.data.error) {
       const code = basicRes.data.error.code;
@@ -96,7 +96,7 @@ async function verifyAttackLog(sellerApiKey, targetTornId, requiredCount, afterT
       verified:      count >= requiredCount,
       count,
       needed:        requiredCount,
-      wrongOutcomes, // seller won when they should have lost
+      wrongOutcomes,
     };
   } catch { return { verified: false, count: 0, needed: requiredCount, wrongOutcomes: 0, error: 'Failed to reach Torn API' }; }
 }
@@ -115,7 +115,7 @@ async function verifyEscapeLog(sellerApiKey, buyerTornId, requiredCount, afterTi
       if (a.result === 'Escape') {
         count++;
       } else {
-        wrongOutcomes++; // attack happened but seller didn't escape
+        wrongOutcomes++;
       }
     }
 
@@ -123,9 +123,53 @@ async function verifyEscapeLog(sellerApiKey, buyerTornId, requiredCount, afterTi
       verified:      count >= requiredCount,
       count,
       needed:        requiredCount,
-      wrongOutcomes, // attacks where seller failed to escape
+      wrongOutcomes,
     };
   } catch { return { verified: false, count: 0, needed: requiredCount, wrongOutcomes: 0, error: 'Failed to reach Torn API' }; }
+}
+
+// ── Bounty verification ───────────────────────────────────────────────────────
+// Checks if an active bounty exists on the target matching the expected amount.
+// Uses the ADMIN API key to read the target's bounty list (seller's key can't see other players' bounties).
+async function verifyBountyPlacement(targetTornId, expectedBountyAmount, requiredCount) {
+  try {
+    const adminKey = process.env.ADMIN_API_KEY;
+    if (!adminKey) return { verified: false, count: 0, needed: requiredCount, error: 'ADMIN_API_KEY not configured — cannot verify bounties' };
+
+    // v2 bounties endpoint returns active bounties on a user
+    const res = await axios.get(`${BASE}/v2/user/${targetTornId}/bounties?key=${adminKey}&comment=NuttHub`, { timeout: 10000 });
+
+    if (res.data?.error) {
+      console.error(`[BOUNTY] API error checking bounties on ${targetTornId}:`, res.data.error);
+      return { verified: false, count: 0, needed: requiredCount, error: res.data.error.error || 'Torn API error' };
+    }
+
+    const bounties = res.data?.bounties || [];
+    console.log(`[BOUNTY] Found ${bounties.length} active bounties on target ${targetTornId}, looking for amount ${expectedBountyAmount}`);
+
+    // Count bounties matching the expected amount
+    let count = 0;
+    const matched = [];
+    for (const b of bounties) {
+      if (Number(b.reward) === Number(expectedBountyAmount)) {
+        count++;
+        matched.push({ lister: b.lister_name || b.lister_id, reward: b.reward, reason: b.reason });
+      }
+    }
+
+    console.log(`[BOUNTY] Matched ${count}/${requiredCount} bounties (amount=$${expectedBountyAmount})`);
+
+    return {
+      verified: count >= requiredCount,
+      count,
+      needed:   requiredCount,
+      matched,
+      totalBounties: bounties.length,
+    };
+  } catch (e) {
+    console.error('[BOUNTY] verifyBountyPlacement error:', e.message);
+    return { verified: false, count: 0, needed: requiredCount, error: 'Failed to reach Torn API' };
+  }
 }
 
 async function getUserInfo(tornId, adminApiKey) {
@@ -136,4 +180,4 @@ async function getUserInfo(tornId, adminApiKey) {
   } catch { return null; }
 }
 
-module.exports = { verifyApiKey, verifyPayment, verifyAttackLog, verifyEscapeLog, getUserInfo };
+module.exports = { verifyApiKey, verifyPayment, verifyAttackLog, verifyEscapeLog, verifyBountyPlacement, getUserInfo };

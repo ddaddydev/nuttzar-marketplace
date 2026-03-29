@@ -775,11 +775,25 @@ async function handleSlash(interaction) {
       internal_key: process.env.INTERNAL_API_KEY, verified_count: null,
     }, { timeout: 10000 });
     if (!result?.data?.success) {
-      // Bug #4 fix: surface actual error from backend
       const errMsg = result?.data?.error || 'Request failed';
       return interaction.editReply({ content: `❌ ${errMsg}` });
     }
-    return interaction.editReply({ content: `✅ Claim #${claimId} force-approved.\nPayout: **$${Number(result.data.payout_amount).toLocaleString()}** queued.` });
+    await interaction.editReply({ content: `✅ Claim #${claimId} force-approved.\nPayout: **$${Number(result.data.payout_amount).toLocaleString()}** queued.` });
+
+    // Update or delete the contract embed in Discord
+    if (result.data.claim?.contract_id) {
+      const contractId = result.data.claim.contract_id;
+      const cr = await api.getActiveContracts();
+      const c  = cr.contracts?.find(x => x.id === contractId);
+      if (!c || c.status === 'completed') {
+        await deleteContractEmbed(contractId);
+        const completedContract = await get(`${BACKEND}/api/contracts/${contractId}`);
+        await ensurePlaceholder(completedContract?.data?.contract?.type || 'loss');
+      } else {
+        await updateContractEmbed(contractId);
+      }
+    }
+    return;
   }
 
   // Bug #5: /admin-claims command — view all active claims with IDs

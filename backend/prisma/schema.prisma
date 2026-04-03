@@ -1,0 +1,250 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum GameType {
+  CRASH
+  PLINKO
+  HEIST
+  BLACKJACK
+  CRATE
+  PVP_STASHHOUSE
+  PVP_RPS
+  PVP_PAINTBALL
+}
+
+enum MatchStatus {
+  WAITING
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum PvpGameType {
+  STASHHOUSE
+  RPS
+  PAINTBALL
+}
+
+// ─── Users & Wallets ──────────────────────────────────────────────────────────
+
+model User {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  passwordHash String
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+
+  wallet           Wallet?
+  gameHistory      GameHistory[]
+  gameSessions     GameSession[]
+  crateLogs        CrateLog[]
+  rwInventoryWins  RwInventory[]
+  pvpMatchesAsP1   PvpMatch[]         @relation("Player1")
+  pvpMatchesAsP2   PvpMatch[]         @relation("Player2")
+  leaderboardEntry LeaderboardEntry?
+
+  @@index([username])
+}
+
+model Wallet {
+  id      Int @id @default(autoincrement())
+  userId  Int @unique
+  // Integer credits only — no floats, ever.
+  // 1 credit = 1 unit. Fractions are forbidden at the DB and app layer.
+  credits Int @default(0)
+  // Premium currency awarded from Key Chest crate
+  keys    Int @default(0)
+  // Optimistic concurrency lock — incremented on every write.
+  // Prevents double-spend without table-level locks.
+  version Int @default(0)
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+// ─── Game History ─────────────────────────────────────────────────────────────
+
+model GameHistory {
+  id           Int      @id @default(autoincrement())
+  userId       Int
+  gameType     GameType
+  betAmount    Int      // credits wagered (always positive)
+  resultAmount Int      // signed net delta: positive = won, negative = lost
+  // Sanitised outcome detail for audit — computed after resolution, never leaked before.
+  // Example: { "multiplier": 3.14 } for Crash, { "path": [...], "slot": 5 } for Plinko
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
+
+// ─── Game Sessions (Blackjack / Heist) ───────────────────────────────────────
+// Replaces Redis — sessions stored in Postgres with TTL cleanup.
+// The state column is an opaque server-side blob. It is NEVER sent to clients.
+
+model GameSession {
+  id        String      @id @default(uuid())
+  userId    Int
+  gameType  GameType
+  // Full authoritative game state. Contains shuffled decks, RNG commitments,
+  // phase progress. Never serialised into any API response.
+  state     Json
+  expiresAt DateTime
+  createdAt DateTime    @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([expiresAt]) // Used by the cleanup job
+}
+
+// ─── Crates ───────────────────────────────────────────────────────────────────
+
+enum CrateLogStatus {
+  PENDING // item won, awaiting manual Torn transfer
+  SENT    // admin has sent the item in-game
+}
+
+model Crate {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  price       Int      // cost in credits to open
+  targetEdge  Float    @default(0.05) // target house edge as decimal (0.05 = 5%)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items     CrateItem[]
+  crateLogs CrateLog[]
+}
+
+model CrateItem {
+  id          Int     @id @default(autoincrement())
+  crateId     Int
+  name        String
+  tornId      Int?    // Torn item ID — used for image URL and Weav3r price lookup
+  value       Int     // credits awarded on win (hidden from frontend)
+  weight      Int     // relative probability weight (hidden from frontend)
+  isRwWeapon  Boolean @default(false) // Ranked Weapon — show special stats
+  isKey       Boolean @default(false) // Key item — awards keys instead of credits
+  keyAmount   Int     @default(1)     // number of keys awarded if isKey = true
+  rarity      String  @default("common") // "common"|"uncommon"|"rare"|"legendary" (display only)
+
+  crate       Crate        @relation(fields: [crateId], references: [id], onDelete: Cascade)
+  crateLogs   CrateLog[]
+  rwInventory RwInventory[]
+
+  @@index([crateId])
+}
+
+// Fulfillment tracking — admin workflow for sending won items in-game
+model CrateLog {
+  id         Int            @id @default(autoincrement())
+  userId     Int
+  crateId    Int
+  itemId     Int
+  itemValue  Int            // snapshot of value at time of opening
+  status     CrateLogStatus @default(PENDING)
+  // Provably-fair foundation: seedHash sent to client before roll, serverSeed revealed after
+  seedHash   String?        // sha256(serverSeed) — safe to send to frontend
+  serverSeed String?        // raw seed — NEVER sent to frontend, stored for audit/verification
+  createdAt  DateTime       @default(now())
+  sentAt     DateTime?      // set when admin marks as sent
+
+  user  User      @relation(fields: [userId], references: [id])
+  crate Crate     @relation(fields: [crateId], references: [id])
+  item  CrateItem @relation(fields: [itemId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// RW Weapon stock tracking — one row per physical weapon in inventory
+// Checked atomically inside openCrate transaction to prevent double-awarding
+model RwInventory {
+  id               Int       @id @default(autoincrement())
+  itemId           Int       // references CrateItem.id (must have isRwWeapon = true)
+  isAvailable      Boolean   @default(true)
+  assignedToUserId Int?
+  assignedAt       DateTime?
+  createdAt        DateTime  @default(now())
+
+  item CrateItem @relation(fields: [itemId], references: [id])
+  user User?     @relation(fields: [assignedToUserId], references: [id])
+
+  @@index([itemId, isAvailable]) // Critical — used on every RW roll check
+}
+
+// ─── PvP Matches ──────────────────────────────────────────────────────────────
+
+model PvpMatch {
+  id        Int         @id @default(autoincrement())
+  gameType  PvpGameType
+  status    MatchStatus @default(WAITING)
+  player1Id Int
+  player2Id Int?        // null until an opponent joins
+  betAmount Int         // each player's wager (both sides)
+  winnerId  Int?        // null until resolved
+  // Authoritative match state blob. Filtered per-player before any API response.
+  // Contains opponent boards, unrevealed choices, HP values, etc.
+  // This column NEVER leaves the server in raw form.
+  state     Json
+  expiresAt DateTime    // WAITING matches auto-cancel after this time
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  player1 User  @relation("Player1", fields: [player1Id], references: [id])
+  player2 User? @relation("Player2", fields: [player2Id], references: [id])
+
+  @@index([status])
+  @@index([player1Id])
+  @@index([player2Id])
+  @@index([status, gameType]) // Matchmaking queries
+  @@index([expiresAt])        // Expiry cleanup job
+}
+
+// ─── Leaderboard ──────────────────────────────────────────────────────────────
+
+model LeaderboardEntry {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @unique
+  totalGambled Int      @default(0)
+  totalProfit  Int      @default(0) // can be negative
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([totalGambled(sort: Desc)])
+  @@index([totalProfit(sort: Desc)])
+}
+
+// ─── Admin / Game Config ──────────────────────────────────────────────────────
+// Hot-reloadable per-game config. Read on each game request (with 30s cache).
+// Admin can tweak house edge and EV without a redeploy.
+
+model GameConfig {
+  id        Int      @id @default(autoincrement())
+  gameType  GameType @unique
+  // Game-specific parameters: house edge, EV multipliers, min/max bet, etc.
+  config    Json
+  updatedAt DateTime @updatedAt
+  updatedBy Int?     // admin userId who last changed it
+}

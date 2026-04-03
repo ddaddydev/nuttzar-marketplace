@@ -1,0 +1,13 @@
+[build]
+builder = "nixpacks"
+buildCommand = "npx prisma generate && npm run build"
+
+[deploy]
+startCommand = "npx prisma db push --accept-data-loss && npx prisma db seed && node dist/index.js"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+[environments.production]
+  [environments.production.variables]
+  NODE_ENV = "production"
+  PORT = "3000"
